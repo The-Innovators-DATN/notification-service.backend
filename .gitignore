@@ -1,0 +1,12 @@
+# .gitignore
+.env
+
+logs/
+
+notification-service
+*.exe
+
+.idea/
+.vscode/
+
+*.out
