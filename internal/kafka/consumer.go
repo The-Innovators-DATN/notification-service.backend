@@ -1,12 +1,14 @@
 package kafka
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	"github.com/segmentio/kafka-go"
 	"notification-service/internal/logging"
 	"notification-service/internal/notification"
 	"sync"
+	"time"
 )
 
 type Config struct {
@@ -14,21 +16,30 @@ type Config struct {
 }
 
 type Consumer struct {
-	consumer *kafka.Consumer
+	reader   *kafka.Reader
 	svc      *notification.Service
 	logger   *logging.Logger
+	stopChan chan struct{}
 }
 
 func NewConsumer(cfg Config, svc *notification.Service) (*Consumer, error) {
-	c, err := kafka.NewConsumer(&kafka.ConfigMap{
-		"bootstrap.servers": cfg.Broker,
-		"group.id":          "notification-service",
-		"auto.offset.reset": "earliest",
+	r := kafka.NewReader(kafka.ReaderConfig{
+		Brokers: []string{cfg.Broker},
+		Topic:   "alert_notification",
+		GroupID: "notification-service",
+
+		MinBytes:    10e3, // 10KB
+		MaxBytes:    10e6, // 10MB
+		MaxWait:     time.Second * 3,
+		StartOffset: kafka.LastOffset,
 	})
-	if err != nil {
-		return nil, err
-	}
-	return &Consumer{consumer: c, svc: svc, logger: svc.Logger()}, nil
+
+	return &Consumer{
+		reader:   r,
+		svc:      svc,
+		logger:   svc.Logger(),
+		stopChan: make(chan struct{}),
+	}, nil
 }
 
 func (s *Consumer) Start(wg *sync.WaitGroup) {
@@ -36,51 +47,55 @@ func (s *Consumer) Start(wg *sync.WaitGroup) {
 	go func() {
 		defer wg.Done()
 		s.logger.Info("", "Kafka consumer started")
-		if err := s.consumer.SubscribeTopics([]string{"alert_notification"}, nil); err != nil {
-			s.logger.Error("", "Subscribe failed: %v", err)
-			return
-		}
 
+		ctx := context.Background()
 		for {
-			msg, err := s.consumer.ReadMessage(-1)
-			if err != nil {
-				s.logger.Error("", "Read message failed: %v", err)
-				continue
-			}
+			select {
+			case <-s.stopChan:
+				s.logger.Info("", "Kafka consumer stopped")
+				return
+			default:
+				msg, err := s.reader.ReadMessage(ctx)
+				if err != nil {
+					s.logger.Error("", "Read message failed: %v", err)
+					continue
+				}
 
-			var alert struct {
-				AlertID    string `json:"alert_id"`
-				AlertName  string `json:"alert_name"`
-				Severity   int    `json:"severity"`
-				Status     string `json:"status"`
-				UserID     int    `json:"user_id"`
-				Message    string `json:"message"`
-				MetricName string `json:"metric_name"`
-				Value      int    `json:"value"`
-				Threshold  int    `json:"threshold"`
-			}
-			if err := json.Unmarshal(msg.Value, &alert); err != nil {
-				s.logger.Error("", "Unmarshal message failed: %v", err)
-				continue
-			}
+				var alert struct {
+					AlertID    string `json:"alert_id"`
+					AlertName  string `json:"alert_name"`
+					Severity   int    `json:"severity"`
+					Status     string `json:"status"`
+					UserID     int    `json:"user_id"`
+					Message    string `json:"message"`
+					MetricName string `json:"metric_name"`
+					Value      int    `json:"value"`
+					Threshold  int    `json:"threshold"`
+				}
 
-			if alert.AlertID == "" || alert.Severity < 1 || alert.UserID < 1 {
-				s.logger.Error("", "Invalid message: missing alert_id, severity, or user_id")
-				continue
-			}
+				if err := json.Unmarshal(msg.Value, &alert); err != nil {
+					s.logger.Error("", "Unmarshal message failed: %v", err)
+					continue
+				}
 
-			subject := fmt.Sprintf("%s: %s", alert.Status, alert.AlertName)
-			body := fmt.Sprintf("Alert: %s\nMessage: %s\nMetric: %s\nValue: %d\nThreshold: %d",
-				alert.AlertName, alert.Message, alert.MetricName, alert.Value, alert.Threshold)
-			s.svc.QueueNotification("alert_notification", alert.Severity, subject, body, alert.UserID, alert.AlertID)
-			s.logger.Info(alert.AlertID, "Processed Kafka message")
+				if alert.AlertID == "" || alert.Severity < 1 || alert.UserID < 1 {
+					s.logger.Error("", "Invalid message: missing alert_id, severity, or user_id")
+					continue
+				}
+
+				subject := fmt.Sprintf("%s: %s", alert.Status, alert.AlertName)
+				body := fmt.Sprintf("Alert: %s\nMessage: %s\nMetric: %s\nValue: %d\nThreshold: %d",
+					alert.AlertName, alert.Message, alert.MetricName, alert.Value, alert.Threshold)
+				s.svc.QueueNotification("alert_notification", alert.Severity, subject, body, alert.UserID, alert.AlertID)
+				s.logger.Info(alert.AlertID, "Processed Kafka message")
+			}
 		}
 	}()
 }
 
 func (s *Consumer) Close() {
-	err := s.consumer.Close()
-	if err != nil {
-		return
+	close(s.stopChan)
+	if err := s.reader.Close(); err != nil {
+		s.logger.Error("", "Failed to close Kafka reader: %v", err)
 	}
 }

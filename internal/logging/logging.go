@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"fmt"
 	"github.com/sirupsen/logrus"
 	"os"
 )
@@ -12,10 +13,18 @@ type Logger struct {
 func New() (*Logger, error) {
 	logger := logrus.New()
 	logger.SetFormatter(&logrus.JSONFormatter{})
+
+	// Create logs directory if it doesn't exist
+	err := os.MkdirAll("logs", 0755)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create logs directory: %w", err)
+	}
+
 	file, err := os.OpenFile("logs/app.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
 		return nil, err
 	}
+
 	logger.SetOutput(file)
 	logger.AddHook(&consoleHook{logger: logrus.New()})
 	return &Logger{logger: logger}, nil

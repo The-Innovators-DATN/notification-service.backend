@@ -22,14 +22,25 @@ type Handler struct {
 func NewRouter(db *db.DB, logger *logging.Logger, cfg config.Config) *gin.Engine {
 	r := gin.Default()
 	h := &Handler{db: db, logger: logger, config: cfg}
-	r.POST("/contact-points", h.CreateContactPoint)
-	r.POST("/policies", h.CreatePolicy)
-	r.GET("/notifications", h.GetNotifications)
-	r.GET("/notifications/:id", h.GetNotificationByID)
-	r.POST("/notifications/retry/:id", h.RetryNotification)
-	r.POST("/telegram/register", h.RegisterTelegram)
-	r.POST("/sms/register", h.RegisterSMS)
-	r.POST("/email/register", h.RegisterEmail)
+
+	basePath := cfg.API.BasePath
+
+	r.Group(basePath)
+	{
+		r.POST("/contact-points", h.CreateContactPoint)
+		r.POST("/policies", h.CreatePolicy)
+		r.GET("/notifications", h.GetNotifications)
+		r.GET("/notifications/:id", h.GetNotificationByID)
+		r.POST("/notifications/retry/:id", h.RetryNotification)
+		r.POST("/telegram/register", h.RegisterTelegram)
+		r.POST("/sms/register", h.RegisterSMS)
+		r.POST("/email/register", h.RegisterEmail)
+	}
+
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+
 	return r
 }
 

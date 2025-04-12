@@ -28,6 +28,9 @@ type Config struct {
 		AuthToken  string
 		FromNumber string
 	}
+	API struct {
+		BasePath string
+	}
 }
 
 func Load() (Config, error) {
@@ -37,15 +40,21 @@ func Load() (Config, error) {
 
 	var cfg Config
 	cfg.Kafka.Broker = os.Getenv("KAFKA_BROKER")
+
 	cfg.DB.DSN = os.Getenv("DB_DSN")
+
 	cfg.Email.SMTPServer = os.Getenv("EMAIL_SMTP_SERVER")
 	cfg.Email.SMTPPort, _ = strconv.Atoi(os.Getenv("EMAIL_SMTP_PORT"))
 	cfg.Email.Username = os.Getenv("EMAIL_USERNAME")
 	cfg.Email.Password = os.Getenv("EMAIL_PASSWORD")
+
 	cfg.Telegram.BotToken = os.Getenv("TELEGRAM_BOT_TOKEN")
+
 	cfg.SMS.AccountSID = os.Getenv("TWILIO_ACCOUNT_SID")
 	cfg.SMS.AuthToken = os.Getenv("TWILIO_AUTH_TOKEN")
 	cfg.SMS.FromNumber = os.Getenv("TWILIO_FROM_NUMBER")
+
+	cfg.API.BasePath = os.Getenv("API_BASE_PART")
 
 	// Basic validation
 	if cfg.Kafka.Broker == "" || cfg.DB.DSN == "" {
