@@ -168,68 +168,84 @@ func (s *Service) handleTask(ctx context.Context, task Task) {
 		RecipientID:  task.RecipientID,
 		RequestID:    task.RequestID,
 		RetryCount:   0,
-		LatestStatus: task.Subject[:6],
+		LatestStatus: extractLatestStatus(task.Subject),
 	}
-	if err := s.db.CreateNotification(context.Background(), n); err != nil {
+	if err := s.db.CreateNotification(ctx, n); err != nil {
 		s.logger.Error(task.RequestID, "Create notification failed: %v", err)
 		return
 	}
 
 	s.logger.Debug(task.RequestID, "Fetching policy for severity %d", task.Severity)
-	policy, contact, err := s.db.GetPolicyAndContact(context.Background(), task.Topic, task.Severity)
+	policy, contact, err := s.db.GetPolicyAndContact(ctx, task.Topic, task.Severity)
 	if err != nil {
 		s.logger.Error(task.RequestID, "Query policy failed: %v", err)
-		if err := s.db.UpdateNotificationStatus(context.Background(), task.RequestID, "failed", err.Error()); err != nil {
+		if err := s.db.UpdateNotificationStatus(ctx, task.RequestID, "failed", err.Error()); err != nil {
 			s.logger.Error(task.RequestID, "Update notification status failed: %v", err)
 		}
 		return
 	}
 	n.NotificationPolicyID = policy.ID
 
-	err = s.send(contact.Type, contact.Configuration, task.Subject, task.Body)
+	err = s.send(ctx, contact.Type, contact.Configuration, task.Subject, task.Body)
 	if err == nil {
-		if err := s.db.UpdateNotificationStatus(context.Background(), task.RequestID, "sent", ""); err != nil {
+		if err := s.db.UpdateNotificationStatus(ctx, task.RequestID, "sent", ""); err != nil {
 			s.logger.Error(task.RequestID, "Update notification status failed: %v", err)
 		}
 		s.logger.Info(task.RequestID, "Sent via %s", contact.Type)
 	} else {
 		s.logger.Warn(task.RequestID, "Retry queued (1/%d): %v", MaxRetries, err)
-		if err := s.db.UpdateNotificationStatus(context.Background(), task.RequestID, "retrying", err.Error()); err != nil {
+		if err := s.db.UpdateNotificationStatus(ctx, task.RequestID, "retrying", err.Error()); err != nil {
 			s.logger.Error(task.RequestID, "Update notification status failed: %v", err)
 		}
 		task.RetryCount = 1
-		s.retryTasks <- task
+		select {
+		case s.retryTasks <- task:
+		default:
+			s.logger.Error(task.RequestID, "Retry task channel is full")
+			if err := s.db.UpdateNotificationStatus(ctx, task.RequestID, "failed", err.Error()); err != nil {
+				s.logger.Error(task.RequestID, "Update notification status failed: %v", err)
+			}
+		}
 	}
 }
 
-func (s *Service) handleRetryTask(task Task) {
+func (s *Service) handleRetryTask(ctx context.Context, task Task) {
 	// Exponential backoff: 30s, 60s, 120s
 	interval := time.Duration(math.Pow(2, float64(task.RetryCount-1))) * 30 * time.Second
-	<-time.After(interval)
+
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+	case <-s.ctx.Done():
+		s.logger.Info(task.RequestID, "Retry worker stopped")
+		return
+	}
 
 	s.logger.Debug(task.RequestID, "Checking latest status before retry")
-	latestStatus, err := s.db.GetLatestStatus(context.Background(), task.RequestID)
+	latestStatus, err := s.db.GetLatestStatus(ctx, task.RequestID)
 	if err != nil {
 		s.logger.Error(task.RequestID, "Get latest status failed: %v", err)
 		return
 	}
-	if latestStatus == "resolved" && task.Subject[:6] == "Alert:" {
-		if err := s.db.UpdateNotificationStatus(context.Background(), task.RequestID, "cancelled", "Resolved received"); err != nil {
+	if latestStatus == "resolved" {
+		if err := s.db.UpdateNotificationStatus(ctx, task.RequestID, "cancelled", "Resolved received"); err != nil {
 			s.logger.Error(task.RequestID, "Update notification status failed: %v", err)
 		}
 		s.logger.Info(task.RequestID, "Retry cancelled due to resolved")
 		return
 	}
 
-	_, contact, err := s.db.GetPolicyAndContact(context.Background(), task.Topic, task.Severity)
+	_, contact, err := s.db.GetPolicyAndContact(ctx, task.Topic, task.Severity)
 	if err != nil {
 		s.logger.Error(task.RequestID, "Query policy failed: %v", err)
 		return
 	}
 
-	err = s.send(contact.Type, contact.Configuration, task.Subject, task.Body)
+	err = s.send(ctx, contact.Type, contact.Configuration, task.Subject, task.Body)
 	if err == nil {
-		if err := s.db.UpdateNotificationStatus(context.Background(), task.RequestID, "sent", ""); err != nil {
+		if err := s.db.UpdateNotificationStatus(ctx, task.RequestID, "sent", ""); err != nil {
 			s.logger.Error(task.RequestID, "Update notification status failed: %v", err)
 		}
 		s.logger.Info(task.RequestID, "Sent via %s", contact.Type)
@@ -247,7 +263,23 @@ func (s *Service) handleRetryTask(task Task) {
 			s.logger.Error(task.RequestID, "Update notification status failed: %v", err)
 		}
 		task.RetryCount++
-		s.retryTasks <- task
+
+		select {
+		case s.retryTasks <- task:
+		case <-ctx.Done():
+			s.logger.Info(task.RequestID, "Cancel retry task due to context done")
+		default:
+			s.logger.Error(task.RequestID, "Retry task channel is full")
+			if err := s.db.UpdateNotificationStatus(context.Background(), task.RequestID, "failed", err.Error()); err != nil {
+				s.logger.Error(task.RequestID, "Update notification status failed: %v", err)
+			}
+		}
+	} else {
+		s.logger.Error(task.RequestID, "Max retries reached, stopping retry: %v", err)
+		if err := s.db.UpdateNotificationStatus(context.Background(), task.RequestID, "failed", err.Error()); err != nil {
+			s.logger.Error(task.RequestID, "Update notification status failed: %v", err)
+		}
+		return
 	}
 }
 
@@ -258,67 +290,126 @@ func isPermanentError(err error) bool {
 		strings.Contains(errStr, "Chat ID not found")
 }
 
-func (s *Service) send(providerType string, config map[string]interface{}, subject, body string) error {
+func (s *Service) send(ctx context.Context, providerType string, config map[string]interface{}, subject, body string) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
 	switch providerType {
 	case "email":
-		recipientsRaw, ok := config["recipients"].([]interface{})
-		if !ok || len(recipientsRaw) == 0 {
-			return fmt.Errorf("no recipients configured")
-		}
-		recipients := make([]string, len(recipientsRaw))
-		for i, v := range recipientsRaw {
-			recipients[i] = v.(string)
-		}
-		for _, recipient := range recipients {
-			err := email.Send(
-				s.config.Email.SMTPServer,
-				s.config.Email.SMTPPort,
-				s.config.Email.Username,
-				s.config.Email.Password,
-				recipient,
-				subject,
-				body,
-			)
-			if err != nil {
-				s.logger.Error("", "Failed to send email to %s: %v", recipient, err)
-				return err
-			}
-		}
-		return nil
+		return s.sendEmail(ctx, config, subject, body)
 	case "telegram":
-		chatIDsRaw, ok := config["chat_ids"].([]interface{})
-		if !ok || len(chatIDsRaw) == 0 {
-			return fmt.Errorf("no chat_ids configured")
-		}
-		chatIDs := make([]int64, len(chatIDsRaw))
-		for i, v := range chatIDsRaw {
-			chatIDs[i] = int64(v.(float64))
-		}
-		return telegram.Send(s.config.Telegram.BotToken, chatIDs, body)
+		return s.sendTelegram(ctx, config, body)
 	case "sms":
-		toNumbersRaw, ok := config["to_numbers"].([]interface{})
-		if !ok || len(toNumbersRaw) == 0 {
-			return fmt.Errorf("no to_numbers configured")
-		}
-		toNumbers := make([]string, len(toNumbersRaw))
-		for i, v := range toNumbersRaw {
-			toNumbers[i] = v.(string)
-		}
-		for _, toNumber := range toNumbers {
-			err := sms.Send(
-				s.config.SMS.AccountSID,
-				s.config.SMS.AuthToken,
-				s.config.SMS.FromNumber,
-				toNumber,
-				body,
-			)
-			if err != nil {
-				s.logger.Error("", "Failed to send SMS to %s: %v", toNumber, err)
-				return err
-			}
-		}
-		return nil
+		return s.sendSMS(ctx, config, body)
 	default:
-		return fmt.Errorf("unknown provider: %s", providerType)
+		return fmt.Errorf("%w: %s", ErrProviderNotFound, providerType)
 	}
+}
+
+func (s *Service) sendEmail(ctx context.Context, config map[string]interface{}, subject, body string) error {
+	recipientsRaw, ok := config["recipients"].([]interface{})
+	if !ok || len(recipientsRaw) == 0 {
+		return ErrNoRecipients
+	}
+
+	recipients := make([]string, 0, len(recipientsRaw))
+	for _, v := range recipientsRaw {
+		if str, ok := v.(string); ok {
+			recipients = append(recipients, str)
+		}
+	}
+
+	if len(recipients) == 0 {
+		return ErrNoRecipients
+	}
+
+	for _, recipient := range recipients {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		err := email.Send(
+			s.config.Email.SMTPServer,
+			s.config.Email.SMTPPort,
+			s.config.Email.Username,
+			s.config.Email.Password,
+			recipient,
+			subject,
+			body,
+		)
+		if err != nil {
+			s.logger.Error("", "Send email to %s failed: %v", recipient, err)
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) sendTelegram(ctx context.Context, config map[string]interface{}, body string) error {
+	chatIDsRaw, ok := config["chat_ids"].([]interface{})
+	if !ok || len(chatIDsRaw) == 0 {
+		return ErrNoRecipients
+	}
+
+	chatIDs := make([]int64, 0, len(chatIDsRaw))
+	for _, v := range chatIDsRaw {
+		if f, ok := v.(float64); ok {
+			chatIDs = append(chatIDs, int64(f))
+		}
+	}
+
+	if len(chatIDs) == 0 {
+		return ErrNoRecipients
+	}
+
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	return telegram.Send(s.config.Telegram.BotToken, chatIDs, body)
+}
+
+func (s *Service) sendSMS(ctx context.Context, config map[string]interface{}, body string) error {
+	toNumbersRaw, ok := config["to_numbers"].([]interface{})
+	if !ok || len(toNumbersRaw) == 0 {
+		return ErrNoRecipients
+	}
+
+	toNumbers := make([]string, 0, len(toNumbersRaw))
+	for _, v := range toNumbersRaw {
+		if str, ok := v.(string); ok {
+			toNumbers = append(toNumbers, str)
+		}
+	}
+
+	if len(toNumbers) == 0 {
+		return ErrNoRecipients
+	}
+
+	for _, toNumber := range toNumbers {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		err := sms.Send(
+			s.config.SMS.AccountSID,
+			s.config.SMS.AuthToken,
+			s.config.SMS.FromNumber,
+			toNumber,
+			body,
+		)
+		if err != nil {
+			s.logger.Error("", "Send SMS to %s failed: %v", toNumber, err)
+			return err
+		}
+	}
+	return nil
+}
+
+func extractLatestStatus(subject string) string {
+	if len(subject) > 6 {
+		return subject[:6]
+	}
+	return subject
 }
