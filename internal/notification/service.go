@@ -2,6 +2,7 @@ package notification
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/google/uuid"
 	"math"
@@ -15,6 +16,21 @@ import (
 	"strings"
 	"sync"
 	"time"
+)
+
+const (
+	MaxRetries      = 3
+	MaxWorkers      = 10
+	MaxRetryWorkers = 2
+	QueueSize       = 500
+)
+
+var (
+	ErrNoRecipients      = errors.New("no recipients configured")
+	ErrProviderNotFound  = errors.New("unknown provider")
+	ErrPermanentFailure  = errors.New("permanent error")
+	ErrPolicyNotFound    = errors.New("policy not found")
+	ErrInvalidParameters = errors.New("invalid parameters")
 )
 
 type Task struct {
@@ -33,19 +49,21 @@ type Service struct {
 	config     config.Config
 	tasks      chan Task
 	retryTasks chan Task
+	wg         *sync.WaitGroup
+	ctx        context.Context
+	cancel     context.CancelFunc
 }
 
-const (
-	MaxRetries = 3
-)
-
 func New(db *db.DB, logger *logging.Logger, cfg config.Config) *Service {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Service{
 		db:         db,
 		logger:     logger,
 		config:     cfg,
-		tasks:      make(chan Task, 500),
-		retryTasks: make(chan Task, 500),
+		tasks:      make(chan Task, QueueSize),
+		retryTasks: make(chan Task, QueueSize),
+		ctx:        ctx,
+		cancel:     cancel,
 	}
 }
 
@@ -54,31 +72,33 @@ func (s *Service) Logger() *logging.Logger {
 }
 
 func (s *Service) Start(wg *sync.WaitGroup) {
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func(workerID int) {
-			defer wg.Done()
-			s.logger.Info("", "Worker %d started", workerID)
-			for task := range s.tasks {
-				s.handleTask(task)
-			}
-		}(i)
+	s.wg = wg
+	for i := 0; i < MaxWorkers; i++ {
+		s.wg.Add(1)
+		go s.startWorker(i)
 	}
 
-	for i := 0; i < 2; i++ {
-		wg.Add(1)
-		go func(retryID int) {
-			defer wg.Done()
-			s.logger.Info("", "Retry Manager %d started", retryID)
-			for task := range s.retryTasks {
-				s.handleRetryTask(task)
-			}
-		}(i)
+	for i := 0; i < MaxRetryWorkers; i++ {
+		s.wg.Add(1)
+		go s.startRetryWorker(i)
 	}
 }
 
-func (s *Service) QueueNotification(topic string, severity int, subject, body string, recipientID int, requestID string) {
-	s.tasks <- Task{
+func (s *Service) Stop() {
+	s.cancel()
+	close(s.tasks)
+	close(s.retryTasks)
+}
+
+func (s *Service) QueueNotification(topic string, severity int, subject, body string, recipientID int, requestID string) error {
+	if topic == "" || severity < 0 || subject == "" || body == "" || recipientID <= 0 || requestID == "" {
+		s.logger.Error(requestID, "Invalid parameters: topic=%s, severity=%d, subject=%s, body=%s, recipientID=%d, requestID=%s",
+			topic, severity, subject, body, recipientID, requestID)
+		return ErrInvalidParameters
+	}
+
+	select {
+	case s.tasks <- Task{
 		Topic:       topic,
 		Severity:    severity,
 		Subject:     subject,
@@ -86,10 +106,58 @@ func (s *Service) QueueNotification(topic string, severity int, subject, body st
 		RecipientID: recipientID,
 		RequestID:   requestID,
 		RetryCount:  0,
+	}:
+		return nil
+
+	default:
+		s.logger.Error(requestID, "Queue task channel is full")
+		return errors.New("queue task channel is full")
 	}
 }
 
-func (s *Service) handleTask(task Task) {
+func (s *Service) startWorker(workerID int) {
+	defer s.wg.Done()
+	s.logger.Info("", "Worker %d started", workerID)
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			s.logger.Info("", "Worker %d stopped", workerID)
+			return
+		case task, ok := <-s.tasks:
+			if !ok {
+				s.logger.Info("", "Worker %d stopped", workerID)
+				return
+			}
+			ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
+			s.handleTask(ctx, task)
+			cancel()
+		}
+	}
+}
+
+func (s *Service) startRetryWorker(workerID int) {
+	defer s.wg.Done()
+	s.logger.Info("", "Retry worker %d started", workerID)
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			s.logger.Info("", "Retry worker %d stopped", workerID)
+			return
+		case task, ok := <-s.retryTasks:
+			if !ok {
+				s.logger.Info("", "Retry worker %d stopped", workerID)
+				return
+			}
+			ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
+			s.handleRetryTask(ctx, task)
+			cancel()
+		}
+	}
+}
+
+func (s *Service) handleTask(ctx context.Context, task Task) {
 	n := models.Notification{
 		ID:           uuid.New().String(),
 		CreatedAt:    time.Now(),
@@ -180,56 +248,7 @@ func (s *Service) handleRetryTask(task Task) {
 		}
 		task.RetryCount++
 		s.retryTasks <- task
-	} else {
-		// Try fallback provider
-		fallback, ok := contact.Configuration["fallback"].(string)
-		if ok && fallback != "" {
-			s.logger.Info(task.RequestID, "Max retries reached, trying fallback: %s", fallback)
-			fallbackContact, err := s.getFallbackContact(fallback)
-			if err == nil {
-				err = s.send(fallbackContact.Type, fallbackContact.Configuration, task.Subject, task.Body)
-				if err == nil {
-					if err := s.db.UpdateNotificationStatus(context.Background(), task.RequestID, "sent", ""); err != nil {
-						s.logger.Error(task.RequestID, "Update notification status failed: %v", err)
-					}
-					s.logger.Info(task.RequestID, "Sent via fallback %s", fallbackContact.Type)
-					return
-				}
-			}
-		}
-		s.logger.Error(task.RequestID, "Failed after %d retries: %v", MaxRetries, err)
-		if err := s.db.UpdateNotificationStatus(context.Background(), task.RequestID, "failed", err.Error()); err != nil {
-			s.logger.Error(task.RequestID, "Update notification status failed: %v", err)
-		}
 	}
-}
-
-func (s *Service) getFallbackContact(providerType string) (models.ContactPoint, error) {
-	rows, err := s.db.Conn.Query(context.Background(), `
-		SELECT id, name, user_id, type, configuration, status, created_at
-		FROM contact_points WHERE type = $1 AND status = 'active' LIMIT 1`, providerType)
-	if err != nil {
-		return models.ContactPoint{}, err
-	}
-
-	var cp models.ContactPoint
-	for rows.Next() {
-		err := rows.Scan(&cp.ID, &cp.Name, &cp.UserID, &cp.Type, &cp.Configuration, &cp.Status, &cp.CreatedAt)
-		if err != nil {
-			rows.Close()
-			return models.ContactPoint{}, err
-		}
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return models.ContactPoint{}, err
-	}
-	rows.Close()
-
-	if cp.ID == "" {
-		return models.ContactPoint{}, fmt.Errorf("no active contact point for %s", providerType)
-	}
-	return cp, nil
 }
 
 func isPermanentError(err error) bool {
