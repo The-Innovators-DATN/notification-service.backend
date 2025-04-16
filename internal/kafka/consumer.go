@@ -4,98 +4,132 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/segmentio/kafka-go"
-	"notification-service/internal/logging"
-	"notification-service/internal/notification"
 	"sync"
 	"time"
+
+	"github.com/segmentio/kafka-go"
+	"notification-service/internal/logging"
+	"notification-service/internal/models"
 )
 
-type Config struct {
-	Broker string
+// AlertNotification đại diện cho dữ liệu từ Spring Boot
+type AlertNotification struct {
+	AlertID      string    `json:"alert_id"`
+	AlertName    string    `json:"alert_name"`
+	StationID    int       `json:"station_id"`
+	UserID       int       `json:"user_id"`
+	Message      string    `json:"message"`
+	Severity     int       `json:"severity"`
+	Timestamp    time.Time `json:"timestamp"`
+	Status       string    `json:"status"`
+	MetricID     int       `json:"metric_id"`
+	MetricName   string    `json:"metric_name"`
+	Operator     string    `json:"operator"`
+	Threshold    float64   `json:"threshold"`
+	ThresholdMin float64   `json:"threshold_min"`
+	ThresholdMax float64   `json:"threshold_max"`
+	Value        float64   `json:"value"`
 }
 
 type Consumer struct {
-	reader   *kafka.Reader
-	svc      *notification.Service
-	logger   *logging.Logger
-	stopChan chan struct{}
+	reader           *kafka.Reader
+	svc              Service
+	logger           *logging.Logger
+	latestTimestamps map[string]time.Time // Lưu timestamp mới nhất theo alert_id
+	mu               sync.Mutex           // Mutex để đảm bảo thread-safe
 }
 
-func NewConsumer(cfg Config, svc *notification.Service) (*Consumer, error) {
-	r := kafka.NewReader(kafka.ReaderConfig{
-		Brokers: []string{cfg.Broker},
-		Topic:   "alert_notification",
-		GroupID: "notification-service",
+type Service interface {
+	QueueTask(task models.Task)
+	Logger() *logging.Logger
+}
 
-		MinBytes:    10e3, // 10KB
-		MaxBytes:    10e6, // 10MB
-		MaxWait:     time.Second * 3,
-		StartOffset: kafka.LastOffset,
+func NewConsumer(broker, topic, groupID string, svc Service) (*Consumer, error) {
+	reader := kafka.NewReader(kafka.ReaderConfig{
+		Brokers:     []string{broker},
+		Topic:       topic,
+		GroupID:     groupID,
+		MinBytes:    1,
+		MaxBytes:    10e6,
+		StartOffset: kafka.LastOffset, // Chỉ lấy dữ liệu từ offset "latest"
 	})
-
 	return &Consumer{
-		reader:   r,
-		svc:      svc,
-		logger:   svc.Logger(),
-		stopChan: make(chan struct{}),
+		reader:           reader,
+		svc:              svc,
+		logger:           svc.Logger(),
+		latestTimestamps: make(map[string]time.Time),
 	}, nil
 }
 
-func (s *Consumer) Start(wg *sync.WaitGroup) {
+func (c *Consumer) Start(wg *sync.WaitGroup) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		s.logger.Info("", "Kafka consumer started")
+		c.logger.Infof("Kafka consumer started for topic %s with group_id %s", c.reader.Config().Topic, c.reader.Config().GroupID)
 
-		ctx := context.Background()
 		for {
-			select {
-			case <-s.stopChan:
-				s.logger.Info("", "Kafka consumer stopped")
-				return
-			default:
-				msg, err := s.reader.ReadMessage(ctx)
-				if err != nil {
-					s.logger.Error("", "Read message failed: %v", err)
-					continue
-				}
-
-				var alert struct {
-					AlertID    string `json:"alert_id"`
-					AlertName  string `json:"alert_name"`
-					Severity   int    `json:"severity"`
-					Status     string `json:"status"`
-					UserID     int    `json:"user_id"`
-					Message    string `json:"message"`
-					MetricName string `json:"metric_name"`
-					Value      int    `json:"value"`
-					Threshold  int    `json:"threshold"`
-				}
-
-				if err := json.Unmarshal(msg.Value, &alert); err != nil {
-					s.logger.Error("", "Unmarshal message failed: %v", err)
-					continue
-				}
-
-				if alert.AlertID == "" || alert.Severity < 1 || alert.UserID < 1 {
-					s.logger.Error("", "Invalid message: missing alert_id, severity, or user_id")
-					continue
-				}
-
-				subject := fmt.Sprintf("%s: %s", alert.Status, alert.AlertName)
-				body := fmt.Sprintf("Alert: %s\nMessage: %s\nMetric: %s\nValue: %d\nThreshold: %d",
-					alert.AlertName, alert.Message, alert.MetricName, alert.Value, alert.Threshold)
-				s.svc.QueueNotification("alert_notification", alert.Severity, subject, body, alert.UserID, alert.AlertID)
-				s.logger.Info(alert.AlertID, "Processed Kafka message")
+			if err := c.processMessage(context.Background()); err != nil {
+				c.logger.Errorf("Failed to process message: %v", err)
 			}
 		}
 	}()
 }
 
-func (s *Consumer) Close() {
-	close(s.stopChan)
-	if err := s.reader.Close(); err != nil {
-		s.logger.Error("", "Failed to close Kafka reader: %v", err)
+func (c *Consumer) processMessage(ctx context.Context) error {
+	msg, err := c.reader.ReadMessage(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to read message: %w", err)
 	}
+
+	var alert AlertNotification
+	if err := json.Unmarshal(msg.Value, &alert); err != nil {
+		return fmt.Errorf("failed to unmarshal message: %w", err)
+	}
+
+	// Log dữ liệu alert để kiểm tra
+	c.logger.Infof("Received alert: %+v", alert)
+
+	// Kiểm tra timestamp để chỉ xử lý dữ liệu mới nhất
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if lastTimestamp, exists := c.latestTimestamps[alert.AlertID]; exists && !alert.Timestamp.After(lastTimestamp) {
+		c.logger.Infof("Skipping outdated message for alert_id %s, timestamp %v", alert.AlertID, alert.Timestamp)
+		return nil
+	}
+
+	c.latestTimestamps[alert.AlertID] = alert.Timestamp
+
+	// Mapping sang models.Task
+	task := models.Task{
+		RequestID:    alert.AlertID,
+		Subject:      alert.AlertName,
+		Body:         alert.Message,
+		RecipientID:  alert.UserID,
+		Severity:     alert.Severity,
+		Status:       alert.Status,
+		Topic:        c.reader.Config().Topic,
+		Timestamp:    alert.Timestamp,
+		StationID:    alert.StationID,
+		MetricID:     alert.MetricID,
+		MetricName:   alert.MetricName,
+		Operator:     alert.Operator,
+		Threshold:    alert.Threshold,
+		ThresholdMin: alert.ThresholdMin,
+		ThresholdMax: alert.ThresholdMax,
+		Value:        alert.Value,
+	}
+
+	c.svc.QueueTask(task)
+	c.logger.Infof("Queued task for alert_id %s", task.RequestID)
+	return nil
+}
+
+func (c *Consumer) Close() error {
+	if err := c.reader.Close(); err != nil {
+		c.logger.Errorf("Failed to close Kafka reader: %v", err)
+		return fmt.Errorf("failed to close Kafka consumer: %w", err)
+	}
+	c.logger.Infof("Kafka consumer closed")
+	return nil
 }

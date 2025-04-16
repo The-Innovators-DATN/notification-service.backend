@@ -2,68 +2,43 @@ package notification
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"sync"
+	"time"
+
 	"github.com/google/uuid"
-	"math"
 	"notification-service/internal/config"
 	"notification-service/internal/db"
 	"notification-service/internal/logging"
 	"notification-service/internal/models"
-	"notification-service/pkg/email"
-	"notification-service/pkg/sms"
-	"notification-service/pkg/telegram"
-	"strings"
-	"sync"
-	"time"
+	"notification-service/internal/providers"
 )
-
-const (
-	MaxRetries      = 3
-	MaxWorkers      = 10
-	MaxRetryWorkers = 2
-	QueueSize       = 500
-)
-
-var (
-	ErrNoRecipients      = errors.New("no recipients configured")
-	ErrProviderNotFound  = errors.New("unknown provider")
-	ErrPermanentFailure  = errors.New("permanent error")
-	ErrPolicyNotFound    = errors.New("policy not found")
-	ErrInvalidParameters = errors.New("invalid parameters")
-)
-
-type Task struct {
-	Topic       string
-	Severity    int
-	Subject     string
-	Body        string
-	RecipientID int
-	RequestID   string
-	RetryCount  int
-}
 
 type Service struct {
-	db         *db.DB
-	logger     *logging.Logger
-	config     config.Config
-	tasks      chan Task
-	retryTasks chan Task
-	wg         *sync.WaitGroup
-	ctx        context.Context
-	cancel     context.CancelFunc
+	db            *db.DB
+	logger        *logging.Logger
+	config        config.Config
+	tasks         chan models.Task
+	ctx           context.Context
+	cancel        context.CancelFunc
+	wg            *sync.WaitGroup
+	providerFuncs map[string]func(task models.Task, cfg config.Config, cp models.ContactPoint) error
 }
 
 func New(db *db.DB, logger *logging.Logger, cfg config.Config) *Service {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Service{
-		db:         db,
-		logger:     logger,
-		config:     cfg,
-		tasks:      make(chan Task, QueueSize),
-		retryTasks: make(chan Task, QueueSize),
-		ctx:        ctx,
-		cancel:     cancel,
+		db:     db,
+		logger: logger,
+		config: cfg,
+		tasks:  make(chan models.Task, cfg.Notification.QueueSize),
+		ctx:    ctx,
+		cancel: cancel,
+		providerFuncs: map[string]func(task models.Task, cfg config.Config, cp models.ContactPoint) error{
+			"email":    providers.SendEmail,
+			"sms":      providers.SendSMS,
+			"telegram": providers.SendTelegram,
+		},
 	}
 }
 
@@ -73,343 +48,139 @@ func (s *Service) Logger() *logging.Logger {
 
 func (s *Service) Start(wg *sync.WaitGroup) {
 	s.wg = wg
-	for i := 0; i < MaxWorkers; i++ {
+	for i := 0; i < s.config.Notification.MaxWorkers; i++ {
 		s.wg.Add(1)
-		go s.startWorker(i)
-	}
-
-	for i := 0; i < MaxRetryWorkers; i++ {
-		s.wg.Add(1)
-		go s.startRetryWorker(i)
+		go s.worker(i)
 	}
 }
 
-func (s *Service) Stop() {
-	s.cancel()
-	close(s.tasks)
-	close(s.retryTasks)
-}
-
-func (s *Service) QueueNotification(topic string, severity int, subject, body string, recipientID int, requestID string) error {
-	if topic == "" || severity < 0 || subject == "" || body == "" || recipientID <= 0 || requestID == "" {
-		s.logger.Error(requestID, "Invalid parameters: topic=%s, severity=%d, subject=%s, body=%s, recipientID=%d, requestID=%s",
-			topic, severity, subject, body, recipientID, requestID)
-		return ErrInvalidParameters
-	}
-
+func (s *Service) QueueTask(task models.Task) {
 	select {
-	case s.tasks <- Task{
-		Topic:       topic,
-		Severity:    severity,
-		Subject:     subject,
-		Body:        body,
-		RecipientID: recipientID,
-		RequestID:   requestID,
-		RetryCount:  0,
-	}:
-		return nil
-
+	case s.tasks <- task:
+		s.logger.Infof("Task queued: request_id=%s", task.RequestID)
 	default:
-		s.logger.Error(requestID, "Queue task channel is full")
-		return errors.New("queue task channel is full")
+		s.logger.Errorf("Task queue full, dropping task: request_id=%s", task.RequestID)
 	}
 }
 
-func (s *Service) startWorker(workerID int) {
+func (s *Service) worker(id int) {
 	defer s.wg.Done()
-	s.logger.Info("", "Worker %d started", workerID)
-
 	for {
 		select {
 		case <-s.ctx.Done():
-			s.logger.Info("", "Worker %d stopped", workerID)
+			s.logger.Infof("Worker %d stopped", id)
 			return
-		case task, ok := <-s.tasks:
-			if !ok {
-				s.logger.Info("", "Worker %d stopped", workerID)
-				return
-			}
-			ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
-			s.handleTask(ctx, task)
-			cancel()
+		case task := <-s.tasks:
+			s.processTask(task)
 		}
 	}
 }
 
-func (s *Service) startRetryWorker(workerID int) {
-	defer s.wg.Done()
-	s.logger.Info("", "Retry worker %d started", workerID)
-
-	for {
-		select {
-		case <-s.ctx.Done():
-			s.logger.Info("", "Retry worker %d stopped", workerID)
-			return
-		case task, ok := <-s.retryTasks:
-			if !ok {
-				s.logger.Info("", "Retry worker %d stopped", workerID)
-				return
-			}
-			ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
-			s.handleRetryTask(ctx, task)
-			cancel()
-		}
-	}
-}
-
-func (s *Service) handleTask(ctx context.Context, task Task) {
-	n := models.Notification{
-		ID:           uuid.New().String(),
-		CreatedAt:    time.Now(),
-		Type:         "alert",
-		Subject:      task.Subject,
-		Body:         task.Body,
-		Status:       "pending",
-		RecipientID:  task.RecipientID,
-		RequestID:    task.RequestID,
-		RetryCount:   0,
-		LatestStatus: extractLatestStatus(task.Subject),
-	}
-	if err := s.db.CreateNotification(ctx, n); err != nil {
-		s.logger.Error(task.RequestID, "Create notification failed: %v", err)
-		return
-	}
-
-	s.logger.Debug(task.RequestID, "Fetching policy for severity %d", task.Severity)
-	policy, contact, err := s.db.GetPolicyAndContact(ctx, task.Topic, task.Severity)
+func (s *Service) processTask(task models.Task) {
+	// Parse UUID từ task.RequestID
+	taskRequestID, err := uuid.Parse(task.RequestID)
 	if err != nil {
-		s.logger.Error(task.RequestID, "Query policy failed: %v", err)
-		if err := s.db.UpdateNotificationStatus(ctx, task.RequestID, "failed", err.Error()); err != nil {
-			s.logger.Error(task.RequestID, "Update notification status failed: %v", err)
-		}
+		s.logger.Errorf("Invalid request ID %s: %v", task.RequestID, err)
 		return
 	}
-	n.NotificationPolicyID = policy.ID
 
-	err = s.send(ctx, contact.Type, contact.Configuration, task.Subject, task.Body)
-	if err == nil {
-		if err := s.db.UpdateNotificationStatus(ctx, task.RequestID, "sent", ""); err != nil {
-			s.logger.Error(task.RequestID, "Update notification status failed: %v", err)
-		}
-		s.logger.Info(task.RequestID, "Sent via %s", contact.Type)
-	} else {
-		s.logger.Warn(task.RequestID, "Retry queued (1/%d): %v", MaxRetries, err)
-		if err := s.db.UpdateNotificationStatus(ctx, task.RequestID, "retrying", err.Error()); err != nil {
-			s.logger.Error(task.RequestID, "Update notification status failed: %v", err)
-		}
-		task.RetryCount = 1
-		select {
-		case s.retryTasks <- task:
-		default:
-			s.logger.Error(task.RequestID, "Retry task channel is full")
-			if err := s.db.UpdateNotificationStatus(ctx, task.RequestID, "failed", err.Error()); err != nil {
-				s.logger.Error(task.RequestID, "Update notification status failed: %v", err)
+	// Tạo body bao gồm tất cả thông tin chi tiết
+	bodyWithDetails := fmt.Sprintf(
+		"%s\nStation ID: %d\nMetric: %s (ID: %d)\nOperator: %s\nThreshold: %.2f (Min: %.2f, Max: %.2f)\nValue: %.2f",
+		task.Body, task.StationID, task.MetricName, task.MetricID, task.Operator,
+		task.Threshold, task.ThresholdMin, task.ThresholdMax, task.Value,
+	)
+
+	// Tạo bản ghi notification với trạng thái pending
+	notification := models.Notification{
+		ID:                   taskRequestID,
+		CreatedAt:            time.Now(),
+		Type:                 task.Status,
+		Subject:              task.Subject,
+		Body:                 bodyWithDetails,
+		NotificationPolicyID: [16]byte{},
+		Status:               "pending",
+		RecipientID:          task.RecipientID,
+		RequestID:            taskRequestID,
+		LastError:            "",
+		LatestStatus:         task.Status,
+		StationID:            task.StationID,
+		MetricID:             task.MetricID,
+		MetricName:           task.MetricName,
+		Operator:             task.Operator,
+		Threshold:            task.Threshold,
+		ThresholdMin:         task.ThresholdMin,
+		ThresholdMax:         task.ThresholdMax,
+		Value:                task.Value,
+	}
+
+	if err := s.db.CreateNotification(s.ctx, notification); err != nil {
+		s.logger.Errorf("Failed to create notification for alert_id=%s: %v", task.RequestID, err)
+		return
+	}
+
+	// Nếu task là "resolved", kiểm tra trạng thái gần nhất
+	if task.Status == "resolved" {
+		latestNotification, err := s.db.GetLatestNotification(s.ctx, task.RequestID)
+		if err == nil {
+			// Trường hợp 1: Đã có notification với latest_status = "resolved" và status = "sent"
+			if latestNotification.LatestStatus == "resolved" && latestNotification.Status == "sent" {
+				// Kiểm tra giá trị (value) để xem có cần gửi lại không
+				if latestNotification.Value == task.Value {
+					s.logger.Infof("Skipping resolved notification for alert_id=%s, already sent and resolved with same value (%.2f)", task.RequestID, task.Value)
+					_ = s.db.UpdateNotificationStatus(s.ctx, task.RequestID, "cancelled", "already sent and resolved with same value")
+					return
+				}
+				s.logger.Infof("Sending resolved notification for alert_id=%s, value changed (old: %.2f, new: %.2f)", task.RequestID, latestNotification.Value, task.Value)
+				// Tiếp tục gửi vì giá trị đã thay đổi
+			}
+			// Trường hợp 2: Đã có notification với latest_status = "resolved" nhưng status = "failed"
+			if latestNotification.LatestStatus == "resolved" && latestNotification.Status == "failed" {
+				s.logger.Infof("Sending resolved notification for alert_id=%s, previous attempt failed", task.RequestID)
+				// Tiếp tục gửi lại
 			}
 		}
 	}
-}
 
-func (s *Service) handleRetryTask(ctx context.Context, task Task) {
-	// Exponential backoff: 30s, 60s, 120s
-	interval := time.Duration(math.Pow(2, float64(task.RetryCount-1))) * 30 * time.Second
-
-	timer := time.NewTimer(interval)
-	defer timer.Stop()
-
-	select {
-	case <-timer.C:
-	case <-s.ctx.Done():
-		s.logger.Info(task.RequestID, "Retry worker stopped")
-		return
-	}
-
-	s.logger.Debug(task.RequestID, "Checking latest status before retry")
-	latestStatus, err := s.db.GetLatestStatus(ctx, task.RequestID)
+	// Tìm policy
+	policy, err := s.db.GetPolicyByTopicAndSeverity(s.ctx, task.Topic, task.Severity)
 	if err != nil {
-		s.logger.Error(task.RequestID, "Get latest status failed: %v", err)
-		return
-	}
-	if latestStatus == "resolved" {
-		if err := s.db.UpdateNotificationStatus(ctx, task.RequestID, "cancelled", "Resolved received"); err != nil {
-			s.logger.Error(task.RequestID, "Update notification status failed: %v", err)
-		}
-		s.logger.Info(task.RequestID, "Retry cancelled due to resolved")
+		s.logger.Errorf("Failed to get policy for topic=%s, severity=%d: %v", task.Topic, task.Severity, err)
+		_ = s.db.UpdateNotificationStatus(s.ctx, task.RequestID, "failed", err.Error())
 		return
 	}
 
-	_, contact, err := s.db.GetPolicyAndContact(ctx, task.Topic, task.Severity)
+	notification.NotificationPolicyID = policy.ID
+	_ = s.db.UpdateNotificationStatus(s.ctx, task.RequestID, "pending", "")
+
+	// Lấy contact point
+	cp, err := s.db.GetContactPoint(s.ctx, string(policy.ContactPointID[:]))
 	if err != nil {
-		s.logger.Error(task.RequestID, "Query policy failed: %v", err)
+		s.logger.Errorf("Failed to get contact point %s: %v", policy.ContactPointID, err)
+		_ = s.db.UpdateNotificationStatus(s.ctx, task.RequestID, "failed", err.Error())
 		return
 	}
 
-	err = s.send(ctx, contact.Type, contact.Configuration, task.Subject, task.Body)
-	if err == nil {
-		if err := s.db.UpdateNotificationStatus(ctx, task.RequestID, "sent", ""); err != nil {
-			s.logger.Error(task.RequestID, "Update notification status failed: %v", err)
-		}
-		s.logger.Info(task.RequestID, "Sent via %s", contact.Type)
-	} else if task.RetryCount < MaxRetries {
-		// Stop retry early for permanent errors
-		if isPermanentError(err) {
-			s.logger.Error(task.RequestID, "Permanent error, stopping retry: %v", err)
-			if err := s.db.UpdateNotificationStatus(context.Background(), task.RequestID, "failed", err.Error()); err != nil {
-				s.logger.Error(task.RequestID, "Update notification status failed: %v", err)
-			}
-			return
-		}
-		s.logger.Warn(task.RequestID, "Retry queued (%d/%d): %v", task.RetryCount+1, MaxRetries, err)
-		if err := s.db.UpdateNotificationStatus(context.Background(), task.RequestID, "retrying", err.Error()); err != nil {
-			s.logger.Error(task.RequestID, "Update notification status failed: %v", err)
-		}
-		task.RetryCount++
+	// Cập nhật task.Body để gửi thông báo
+	task.Body = bodyWithDetails
 
-		select {
-		case s.retryTasks <- task:
-		case <-ctx.Done():
-			s.logger.Info(task.RequestID, "Cancel retry task due to context done")
-		default:
-			s.logger.Error(task.RequestID, "Retry task channel is full")
-			if err := s.db.UpdateNotificationStatus(context.Background(), task.RequestID, "failed", err.Error()); err != nil {
-				s.logger.Error(task.RequestID, "Update notification status failed: %v", err)
-			}
-		}
-	} else {
-		s.logger.Error(task.RequestID, "Max retries reached, stopping retry: %v", err)
-		if err := s.db.UpdateNotificationStatus(context.Background(), task.RequestID, "failed", err.Error()); err != nil {
-			s.logger.Error(task.RequestID, "Update notification status failed: %v", err)
-		}
+	// Gửi thông báo qua provider
+	providerFunc, exists := s.providerFuncs[cp.Type]
+	if !exists {
+		err := fmt.Errorf("unsupported provider type: %s", cp.Type)
+		s.logger.Errorf("Failed to send notification for alert_id=%s: %v", task.RequestID, err)
+		_ = s.db.UpdateNotificationStatus(s.ctx, task.RequestID, "failed", err.Error())
 		return
 	}
-}
 
-func isPermanentError(err error) bool {
-	errStr := err.Error()
-	return strings.Contains(errStr, "Invalid credentials") ||
-		strings.Contains(errStr, "Invalid to number") ||
-		strings.Contains(errStr, "Chat ID not found")
-}
-
-func (s *Service) send(ctx context.Context, providerType string, config map[string]interface{}, subject, body string) error {
-	if ctx.Err() != nil {
-		return ctx.Err()
+	// Gọi providerFunc
+	err = providerFunc(task, s.config, cp)
+	if err != nil {
+		s.logger.Errorf("Failed to send via %s for alert_id=%s: %v", cp.Type, task.RequestID, err)
+		_ = s.db.UpdateNotificationStatus(s.ctx, task.RequestID, "failed", err.Error())
+		return
 	}
 
-	switch providerType {
-	case "email":
-		return s.sendEmail(ctx, config, subject, body)
-	case "telegram":
-		return s.sendTelegram(ctx, config, body)
-	case "sms":
-		return s.sendSMS(ctx, config, body)
-	default:
-		return fmt.Errorf("%w: %s", ErrProviderNotFound, providerType)
-	}
-}
-
-func (s *Service) sendEmail(ctx context.Context, config map[string]interface{}, subject, body string) error {
-	recipientsRaw, ok := config["recipients"].([]interface{})
-	if !ok || len(recipientsRaw) == 0 {
-		return ErrNoRecipients
-	}
-
-	recipients := make([]string, 0, len(recipientsRaw))
-	for _, v := range recipientsRaw {
-		if str, ok := v.(string); ok {
-			recipients = append(recipients, str)
-		}
-	}
-
-	if len(recipients) == 0 {
-		return ErrNoRecipients
-	}
-
-	for _, recipient := range recipients {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
-		err := email.Send(
-			s.config.Email.SMTPServer,
-			s.config.Email.SMTPPort,
-			s.config.Email.Username,
-			s.config.Email.Password,
-			recipient,
-			subject,
-			body,
-		)
-		if err != nil {
-			s.logger.Error("", "Send email to %s failed: %v", recipient, err)
-			return err
-		}
-	}
-	return nil
-}
-
-func (s *Service) sendTelegram(ctx context.Context, config map[string]interface{}, body string) error {
-	chatIDsRaw, ok := config["chat_ids"].([]interface{})
-	if !ok || len(chatIDsRaw) == 0 {
-		return ErrNoRecipients
-	}
-
-	chatIDs := make([]int64, 0, len(chatIDsRaw))
-	for _, v := range chatIDsRaw {
-		if f, ok := v.(float64); ok {
-			chatIDs = append(chatIDs, int64(f))
-		}
-	}
-
-	if len(chatIDs) == 0 {
-		return ErrNoRecipients
-	}
-
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-
-	return telegram.Send(s.config.Telegram.BotToken, chatIDs, body)
-}
-
-func (s *Service) sendSMS(ctx context.Context, config map[string]interface{}, body string) error {
-	toNumbersRaw, ok := config["to_numbers"].([]interface{})
-	if !ok || len(toNumbersRaw) == 0 {
-		return ErrNoRecipients
-	}
-
-	toNumbers := make([]string, 0, len(toNumbersRaw))
-	for _, v := range toNumbersRaw {
-		if str, ok := v.(string); ok {
-			toNumbers = append(toNumbers, str)
-		}
-	}
-
-	if len(toNumbers) == 0 {
-		return ErrNoRecipients
-	}
-
-	for _, toNumber := range toNumbers {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
-		err := sms.Send(
-			s.config.SMS.AccountSID,
-			s.config.SMS.AuthToken,
-			s.config.SMS.FromNumber,
-			toNumber,
-			body,
-		)
-		if err != nil {
-			s.logger.Error("", "Send SMS to %s failed: %v", toNumber, err)
-			return err
-		}
-	}
-	return nil
-}
-
-func extractLatestStatus(subject string) string {
-	if len(subject) > 6 {
-		return subject[:6]
-	}
-	return subject
+	s.logger.Infof("Successfully sent notification via %s for alert_id=%s", cp.Type, task.RequestID)
+	_ = s.db.UpdateNotificationStatus(s.ctx, task.RequestID, "sent", "")
 }
