@@ -9,11 +9,10 @@ import (
 )
 
 type emailConfig struct {
-	Email string `json:"email"` // Quay lại một email duy nhất
+	Email string `json:"email"`
 }
 
 func SendEmail(task models.Task, cfg config.Config, cp models.ContactPoint) error {
-	// Parse configuration để lấy email
 	var eConfig emailConfig
 	if err := json.Unmarshal([]byte(cp.Configuration), &eConfig); err != nil {
 		return fmt.Errorf("failed to parse Email configuration for user_id=%d: %w", task.RecipientID, err)
@@ -23,7 +22,6 @@ func SendEmail(task models.Task, cfg config.Config, cp models.ContactPoint) erro
 		return fmt.Errorf("email not set in configuration for user_id=%d", task.RecipientID)
 	}
 
-	// Cấu hình SMTP
 	smtpServer := cfg.Email.SMTPServer
 	smtpPort := cfg.Email.SMTPPort
 	username := cfg.Email.Username
@@ -33,17 +31,14 @@ func SendEmail(task models.Task, cfg config.Config, cp models.ContactPoint) erro
 		return fmt.Errorf("missing Email configuration: SMTPServer, SMTPPort, Username, or Password is empty")
 	}
 
-	// Tạo nội dung email
 	subject := task.Subject
 	body := task.Body
 	message := fmt.Sprintf("Subject: %s\n\n%s", subject, body)
 
-	// Thiết lập thông tin gửi email
 	auth := smtp.PlainAuth("", username, password, smtpServer)
 	to := []string{eConfig.Email}
 	addr := fmt.Sprintf("%s:%d", smtpServer, smtpPort)
-
-	// Gửi email
+	
 	err := smtp.SendMail(addr, auth, username, to, []byte(message))
 	if err != nil {
 		return fmt.Errorf("failed to send email to %s: %w", eConfig.Email, err)

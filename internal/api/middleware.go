@@ -7,7 +7,6 @@ import (
 	"notification-service/internal/logging"
 )
 
-// RequestLoggingMiddleware ghi log thông tin request
 func RequestLoggingMiddleware(logger *logging.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()

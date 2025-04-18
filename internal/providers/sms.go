@@ -11,7 +11,7 @@ import (
 )
 
 type smsConfig struct {
-	PhoneNumber string `json:"phone_number"` // Quay lại một số điện thoại duy nhất
+	PhoneNumber string `json:"phone_number"`
 }
 
 func SendSMS(task models.Task, cfg config.Config, cp models.ContactPoint) error {
@@ -25,7 +25,6 @@ func SendSMS(task models.Task, cfg config.Config, cp models.ContactPoint) error 
 		return fmt.Errorf("phone_number not set in configuration for user_id=%d", task.RecipientID)
 	}
 
-	// Cấu hình Twilio
 	accountSID := cfg.SMS.AccountSID
 	authToken := cfg.SMS.AuthToken
 	fromNumber := cfg.SMS.FromNumber
@@ -34,7 +33,6 @@ func SendSMS(task models.Task, cfg config.Config, cp models.ContactPoint) error 
 		return fmt.Errorf("missing SMS configuration: AccountSID, AuthToken, or FromNumber is empty")
 	}
 
-	// Tạo nội dung SMS
 	urlStr := fmt.Sprintf("https://api.twilio.com/2010-04-01/Accounts/%s/Messages.json", accountSID)
 	msgData := url.Values{}
 	msgData.Set("To", sConfig.PhoneNumber)
@@ -42,7 +40,6 @@ func SendSMS(task models.Task, cfg config.Config, cp models.ContactPoint) error 
 	msgData.Set("Body", fmt.Sprintf("%s\n%s", task.Subject, task.Body))
 	msgDataReader := *strings.NewReader(msgData.Encode())
 
-	// Tạo request
 	client := &http.Client{}
 	req, err := http.NewRequest("POST", urlStr, &msgDataReader)
 	if err != nil {
@@ -53,7 +50,6 @@ func SendSMS(task models.Task, cfg config.Config, cp models.ContactPoint) error 
 	req.Header.Add("Accept", "application/json")
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 
-	// Gửi SMS
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to send SMS to %s: %w", sConfig.PhoneNumber, err)

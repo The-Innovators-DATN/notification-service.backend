@@ -12,7 +12,6 @@ import (
 	"notification-service/internal/models"
 )
 
-// AlertNotification đại diện cho dữ liệu từ Spring Boot
 type AlertNotification struct {
 	AlertID      string    `json:"alert_id"`
 	AlertName    string    `json:"alert_name"`
@@ -29,14 +28,17 @@ type AlertNotification struct {
 	ThresholdMin float64   `json:"threshold_min"`
 	ThresholdMax float64   `json:"threshold_max"`
 	Value        float64   `json:"value"`
+	PolicyID     string    `json:"policy_id"`
 }
 
 type Consumer struct {
 	reader           *kafka.Reader
 	svc              Service
 	logger           *logging.Logger
-	latestTimestamps map[string]time.Time // Lưu timestamp mới nhất theo alert_id
-	mu               sync.Mutex           // Mutex để đảm bảo thread-safe
+	latestTimestamps map[string]time.Time
+	mu               sync.Mutex
+	ctx              context.Context
+	cancel           context.CancelFunc
 }
 
 type Service interface {
@@ -51,13 +53,16 @@ func NewConsumer(broker, topic, groupID string, svc Service) (*Consumer, error) 
 		GroupID:     groupID,
 		MinBytes:    1,
 		MaxBytes:    10e6,
-		StartOffset: kafka.LastOffset, // Chỉ lấy dữ liệu từ offset "latest"
+		StartOffset: kafka.LastOffset,
 	})
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Consumer{
 		reader:           reader,
 		svc:              svc,
 		logger:           svc.Logger(),
 		latestTimestamps: make(map[string]time.Time),
+		ctx:              ctx,
+		cancel:           cancel,
 	}, nil
 }
 
@@ -68,64 +73,82 @@ func (c *Consumer) Start(wg *sync.WaitGroup) {
 		c.logger.Infof("Kafka consumer started for topic %s with group_id %s", c.reader.Config().Topic, c.reader.Config().GroupID)
 
 		for {
-			if err := c.processMessage(context.Background()); err != nil {
-				c.logger.Errorf("Failed to process message: %v", err)
+			select {
+			case <-c.ctx.Done():
+				c.logger.Infof("Consumer stopped due to context cancellation")
+				return
+			default:
+				if err := c.processMessage(c.ctx); err != nil {
+					c.logger.Errorf("Failed to process message: %v", err)
+					time.Sleep(time.Second) // Tránh spam log quá nhanh
+				}
 			}
 		}
 	}()
 }
 
 func (c *Consumer) processMessage(ctx context.Context) error {
-	msg, err := c.reader.ReadMessage(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to read message: %w", err)
+	const maxRetries = 3
+	var lastErr error
+
+	for i := 0; i < maxRetries; i++ {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("context cancelled")
+		default:
+			msg, err := c.reader.ReadMessage(ctx)
+			if err == nil {
+				var alert AlertNotification
+				if err := json.Unmarshal(msg.Value, &alert); err != nil {
+					return fmt.Errorf("failed to unmarshal message: %w", err)
+				}
+				c.logger.Infof("Received alert: %+v", alert)
+
+				c.mu.Lock()
+				if lastTimestamp, exists := c.latestTimestamps[alert.AlertID]; exists && !alert.Timestamp.After(lastTimestamp) {
+					c.mu.Unlock()
+					c.logger.Infof("Skipping outdated message for alert_id %s, timestamp %v", alert.AlertID, alert.Timestamp)
+					return nil
+				}
+				c.latestTimestamps[alert.AlertID] = alert.Timestamp
+				c.mu.Unlock()
+
+				task := models.Task{
+					RequestID:    alert.AlertID,
+					Subject:      alert.AlertName,
+					Body:         alert.Message,
+					RecipientID:  alert.UserID,
+					Severity:     alert.Severity,
+					Status:       alert.Status,
+					Topic:        c.reader.Config().Topic,
+					Timestamp:    alert.Timestamp,
+					StationID:    alert.StationID,
+					MetricID:     alert.MetricID,
+					MetricName:   alert.MetricName,
+					Operator:     alert.Operator,
+					Threshold:    alert.Threshold,
+					ThresholdMin: alert.ThresholdMin,
+					ThresholdMax: alert.ThresholdMax,
+					Value:        alert.Value,
+					PolicyID:     alert.PolicyID,
+				}
+
+				c.svc.QueueTask(task)
+				c.logger.Infof("Queued task for alert_id %s", task.RequestID)
+				return nil
+			}
+
+			lastErr = err
+			c.logger.Errorf("Failed to read message (attempt %d/%d): %v", i+1, maxRetries, err)
+			time.Sleep(time.Second * time.Duration(i+1)) // Backoff
+		}
 	}
 
-	var alert AlertNotification
-	if err := json.Unmarshal(msg.Value, &alert); err != nil {
-		return fmt.Errorf("failed to unmarshal message: %w", err)
-	}
-
-	// Log dữ liệu alert để kiểm tra
-	c.logger.Infof("Received alert: %+v", alert)
-
-	// Kiểm tra timestamp để chỉ xử lý dữ liệu mới nhất
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if lastTimestamp, exists := c.latestTimestamps[alert.AlertID]; exists && !alert.Timestamp.After(lastTimestamp) {
-		c.logger.Infof("Skipping outdated message for alert_id %s, timestamp %v", alert.AlertID, alert.Timestamp)
-		return nil
-	}
-
-	c.latestTimestamps[alert.AlertID] = alert.Timestamp
-
-	// Mapping sang models.Task
-	task := models.Task{
-		RequestID:    alert.AlertID,
-		Subject:      alert.AlertName,
-		Body:         alert.Message,
-		RecipientID:  alert.UserID,
-		Severity:     alert.Severity,
-		Status:       alert.Status,
-		Topic:        c.reader.Config().Topic,
-		Timestamp:    alert.Timestamp,
-		StationID:    alert.StationID,
-		MetricID:     alert.MetricID,
-		MetricName:   alert.MetricName,
-		Operator:     alert.Operator,
-		Threshold:    alert.Threshold,
-		ThresholdMin: alert.ThresholdMin,
-		ThresholdMax: alert.ThresholdMax,
-		Value:        alert.Value,
-	}
-
-	c.svc.QueueTask(task)
-	c.logger.Infof("Queued task for alert_id %s", task.RequestID)
-	return nil
+	return fmt.Errorf("failed to read message after %d retries: %w", maxRetries, lastErr)
 }
 
 func (c *Consumer) Close() error {
+	c.cancel()
 	if err := c.reader.Close(); err != nil {
 		c.logger.Errorf("Failed to close Kafka reader: %v", err)
 		return fmt.Errorf("failed to close Kafka consumer: %w", err)

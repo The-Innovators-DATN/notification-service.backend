@@ -64,3 +64,27 @@ func (d *DB) GetContactPointsByUserID(ctx context.Context, userID int64) ([]mode
 
 	return contactPoints, nil
 }
+
+func (d *DB) DeleteContactPoint(ctx context.Context, id string) error {
+	query := `
+		UPDATE contact_points
+		SET status = 'deleted'
+		WHERE id::text = $1`
+	_, err := d.Conn.Exec(ctx, query, id)
+	if err != nil {
+		return fmt.Errorf("failed to delete contact point: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) UpdateContactPoint(ctx context.Context, cp models.ContactPoint) error {
+	query := `
+		UPDATE contact_points
+		SET name = $1, user_id = $2, type = $3, configuration = $4, status = $5
+		WHERE id::text = $6`
+	_, err := d.Conn.Exec(ctx, query, cp.Name, cp.UserID, cp.Type, cp.Configuration, cp.Status, cp.ID)
+	if err != nil {
+		return fmt.Errorf("failed to update contact point: %w", err)
+	}
+	return nil
+}

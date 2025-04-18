@@ -12,7 +12,7 @@ type Config struct {
 	Kafka struct {
 		Broker  string
 		Topic   string
-		GroupId string
+		GroupID string
 	}
 	DB struct {
 		DSN string
@@ -42,7 +42,7 @@ type Config struct {
 }
 
 func Load() (Config, error) {
-	if err := godotenv.Load(); err != nil && !os.IsNotExist(err) {
+	if err := godotenv.Load("../.env"); err != nil && !os.IsNotExist(err) {
 		return Config{}, fmt.Errorf("failed to load .env file: %w", err)
 	}
 
@@ -51,7 +51,7 @@ func Load() (Config, error) {
 	// Kafka
 	cfg.Kafka.Broker = os.Getenv("KAFKA_BROKER")
 	cfg.Kafka.Topic = os.Getenv("KAFKA_TOPIC")
-	cfg.Kafka.GroupId = os.Getenv("KAFKA_GROUP_ID")
+	cfg.Kafka.GroupID = os.Getenv("KAFKA_GROUP_ID")
 
 	// Database
 	cfg.DB.DSN = os.Getenv("DB_DSN")
@@ -84,12 +84,10 @@ func Load() (Config, error) {
 		cfg.Notification.MaxWorkers = maxWorkers
 	}
 
-	// Kiểm tra bắt buộc
 	if cfg.Kafka.Broker == "" || cfg.DB.DSN == "" {
 		return Config{}, fmt.Errorf("missing required configurations: KAFKA_BROKER and DB_DSN are required")
 	}
 
-	// Giá trị mặc định
 	if cfg.API.Port == "" {
 		cfg.API.Port = ":8080"
 	}

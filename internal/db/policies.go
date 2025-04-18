@@ -40,26 +40,6 @@ func (d *DB) GetPolicy(ctx context.Context, id string) (models.Policy, error) {
 	return p, nil
 }
 
-func (d *DB) GetPolicyByTopicAndSeverity(ctx context.Context, topic string, severity int) (models.Policy, error) {
-	var p models.Policy
-	var uuid, cpUUID pgtype.UUID
-	query := `
-		SELECT id, contact_point_id, severity, status, topic, created_at
-		FROM notification_policy
-		WHERE topic = $1 AND severity = $2 AND status = 'active'
-		ORDER BY severity DESC
-		LIMIT 1`
-	err := d.Conn.QueryRow(ctx, query, topic, severity).Scan(
-		&uuid, &cpUUID, &p.Severity, &p.Status, &p.Topic, &p.CreatedAt,
-	)
-	if err != nil {
-		return models.Policy{}, fmt.Errorf("failed to get policy by topic and severity: %w", err)
-	}
-	p.ID = uuid.Bytes
-	p.ContactPointID = cpUUID.Bytes
-	return p, nil
-}
-
 func (d *DB) GetPoliciesByUserID(ctx context.Context, userID int64) ([]models.Policy, error) {
 	rows, err := d.Conn.Query(ctx, `
 		SELECT np.id, np.contact_point_id, np.severity, np.status, np.topic, np.created_at
@@ -87,4 +67,28 @@ func (d *DB) GetPoliciesByUserID(ctx context.Context, userID int64) ([]models.Po
 	}
 
 	return policies, nil
+}
+
+func (d *DB) DeletePolicy(ctx context.Context, id string) error {
+	query := `
+		DELETE FROM notification_policy
+		WHERE id::text = $1`
+	_, err := d.Conn.Exec(ctx, query, id)
+	if err != nil {
+		return fmt.Errorf("failed to delete policy: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) UpdatePolicy(ctx context.Context, p models.Policy) error {
+	query := `
+		UPDATE notification_policy
+		SET contact_point_id = $1, severity = $2, status = $3, topic = $4
+		WHERE id::text = $5`
+	_, err := d.Conn.Exec(ctx, query,
+		p.ContactPointID, p.Severity, p.Status, p.Topic, p.ID)
+	if err != nil {
+		return fmt.Errorf("failed to update policy: %w", err)
+	}
+	return nil
 }

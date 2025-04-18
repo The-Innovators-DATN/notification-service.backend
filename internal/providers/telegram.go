@@ -10,7 +10,7 @@ import (
 )
 
 type telegramConfig struct {
-	ChatID int64 `json:"chat_id"` // Quay lại một chat_id duy nhất
+	ChatID int64 `json:"chat_id"`
 }
 
 func SendTelegram(task models.Task, cfg config.Config, cp models.ContactPoint) error {
@@ -19,7 +19,6 @@ func SendTelegram(task models.Task, cfg config.Config, cp models.ContactPoint) e
 		return fmt.Errorf("missing Telegram configuration: botToken is empty")
 	}
 
-	// Parse configuration để lấy chat_id
 	var tConfig telegramConfig
 	if err := json.Unmarshal([]byte(cp.Configuration), &tConfig); err != nil {
 		return fmt.Errorf("failed to parse Telegram configuration for user_id=%d: %w", task.RecipientID, err)

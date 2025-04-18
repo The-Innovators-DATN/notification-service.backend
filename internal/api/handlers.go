@@ -70,6 +70,37 @@ func (h *Handler) GetContactPointsByUserID(c *gin.Context) {
 	c.JSON(http.StatusOK, cps)
 }
 
+func (h *Handler) DeleteContactPoint(c *gin.Context) {
+	id := c.Param("id")
+	if err := h.db.DeleteContactPoint(c.Request.Context(), id); err != nil {
+		h.logger.Errorf("Failed to delete contact point %s: %v", id, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete contact point"})
+		return
+	}
+
+	h.logger.Infof("Deleted contact point: %s", id)
+	c.JSON(http.StatusNoContent, nil)
+}
+
+func (h *Handler) UpdateContactPoint(c *gin.Context) {
+	id := c.Param("id")
+	var cp models.ContactPoint
+	if err := c.ShouldBindJSON(&cp); err != nil {
+		h.logger.Errorf("Invalid request body for contact point: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	if err := h.db.UpdateContactPoint(c.Request.Context(), cp); err != nil {
+		h.logger.Errorf("Failed to update contact point %s: %v", id, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update contact point"})
+		return
+	}
+
+	h.logger.Infof("Updated contact point: %s", id)
+	c.JSON(http.StatusOK, cp)
+}
+
 func (h *Handler) CreatePolicy(c *gin.Context) {
 	var policy models.Policy
 	if err := c.ShouldBindJSON(&policy); err != nil {
@@ -121,7 +152,38 @@ func (h *Handler) GetPoliciesByUserID(c *gin.Context) {
 	c.JSON(http.StatusOK, policies)
 }
 
-func (h *Handler) GetSentNotificationsByUserID(c *gin.Context) {
+func (h *Handler) DeletePolicy(c *gin.Context) {
+	id := c.Param("id")
+	if err := h.db.DeletePolicy(c.Request.Context(), id); err != nil {
+		h.logger.Errorf("Failed to delete policy %s: %v", id, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete policy"})
+		return
+	}
+
+	h.logger.Infof("Deleted policy: %s", id)
+	c.JSON(http.StatusNoContent, nil)
+}
+
+func (h *Handler) UpdatePolicy(c *gin.Context) {
+	id := c.Param("id")
+	var policy models.Policy
+	if err := c.ShouldBindJSON(&policy); err != nil {
+		h.logger.Errorf("Invalid request body for policy: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	if err := h.db.UpdatePolicy(c.Request.Context(), policy); err != nil {
+		h.logger.Errorf("Failed to update policy %s: %v", id, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update policy"})
+		return
+	}
+
+	h.logger.Infof("Updated policy: %s", id)
+	c.JSON(http.StatusOK, policy)
+}
+
+func (h *Handler) GetNotificationsByUserID(c *gin.Context) {
 	userIDStr := c.Param("user_id")
 	userID, err := strconv.Atoi(userIDStr)
 	if err != nil {
@@ -130,7 +192,7 @@ func (h *Handler) GetSentNotificationsByUserID(c *gin.Context) {
 		return
 	}
 
-	notifications, err := h.db.GetSentNotificationsByUserID(c.Request.Context(), userID)
+	notifications, err := h.db.GetNotificationsByUserID(c.Request.Context(), userID)
 	if err != nil {
 		h.logger.Errorf("Failed to get sent notifications for user_id %d: %v", userID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get notifications"})
@@ -141,14 +203,14 @@ func (h *Handler) GetSentNotificationsByUserID(c *gin.Context) {
 	c.JSON(http.StatusOK, notifications)
 }
 
-func (h *Handler) GetAllNotifications(c *gin.Context) {
-	notifications, err := h.db.GetAllNotifications(c.Request.Context())
-	if err != nil {
-		h.logger.Errorf("Failed to get all notifications: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get all notifications"})
-		return
-	}
-
-	h.logger.Infof("Retrieved %d notifications", len(notifications))
-	c.JSON(http.StatusOK, notifications)
-}
+//func (h *Handler) GetAllNotifications(c *gin.Context) {
+//	notifications, err := h.db.GetAllNotifications(c.Request.Context())
+//	if err != nil {
+//		h.logger.Errorf("Failed to get all notifications: %v", err)
+//		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get all notifications"})
+//		return
+//	}
+//
+//	h.logger.Infof("Retrieved %d notifications", len(notifications))
+//	c.JSON(http.StatusOK, notifications)
+//}

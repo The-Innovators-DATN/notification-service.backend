@@ -77,13 +77,14 @@ func (d *DB) GetLatestNotification(ctx context.Context, requestID string) (model
 	return n, nil
 }
 
-func (d *DB) GetSentNotificationsByUserID(ctx context.Context, userID int) ([]models.Notification, error) {
+// TODO: Get Notifications by Which Status
+func (d *DB) GetNotificationsByUserID(ctx context.Context, userID int) ([]models.Notification, error) {
 	rows, err := d.Conn.Query(ctx, `
         SELECT id, created_at, sent_at, type, subject, body, notification_policy_id, status, 
                recipient_id, request_id, last_error, latest_status, station_id, metric_id, 
                metric_name, operator, threshold, threshold_min, threshold_max, value
         FROM notifications
-        WHERE recipient_id = $1 AND status = 'sent'
+        WHERE recipient_id = $1
         ORDER BY created_at DESC`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get sent notifications by user_id %d: %w", userID, err)
@@ -112,38 +113,38 @@ func (d *DB) GetSentNotificationsByUserID(ctx context.Context, userID int) ([]mo
 	return notifications, nil
 }
 
-func (d *DB) GetAllNotifications(ctx context.Context, limit, offset int) ([]models.Notification, error) {
-	query := `
-        SELECT id, created_at, sent_at, type, subject, body, notification_policy_id, status, 
-               recipient_id, request_id, last_error, latest_status, station_id, metric_id, 
-               metric_name, operator, threshold, threshold_min, threshold_max, value
-        FROM notifications
-        ORDER BY created_at DESC
-        LIMIT $1 OFFSET $2`
-	rows, err := d.Conn.Query(ctx, query, limit, offset)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get all notifications: %w", err)
-	}
-	defer rows.Close()
-
-	var notifications []models.Notification
-	for rows.Next() {
-		var n models.Notification
-		var id, policyID, reqID pgtype.UUID
-		err := rows.Scan(
-			&id, &n.CreatedAt, &n.SentAt, &n.Type, &n.Subject, &n.Body,
-			&policyID, &n.Status, &n.RecipientID, &reqID, &n.LastError, &n.LatestStatus,
-			&n.StationID, &n.MetricID, &n.MetricName, &n.Operator, &n.Threshold,
-			&n.ThresholdMin, &n.ThresholdMax, &n.Value,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan notification: %w", err)
-		}
-		n.ID = id.Bytes
-		n.NotificationPolicyID = policyID.Bytes
-		n.RequestID = reqID.Bytes
-		notifications = append(notifications, n)
-	}
-
-	return notifications, nil
-}
+//func (d *DB) GetAllNotifications(ctx context.Context, limit, offset int) ([]models.Notification, error) {
+//	query := `
+//        SELECT id, created_at, sent_at, type, subject, body, notification_policy_id, status,
+//               recipient_id, request_id, last_error, latest_status, station_id, metric_id,
+//               metric_name, operator, threshold, threshold_min, threshold_max, value
+//        FROM notifications
+//        ORDER BY created_at DESC
+//        LIMIT $1 OFFSET $2`
+//	rows, err := d.Conn.Query(ctx, query, limit, offset)
+//	if err != nil {
+//		return nil, fmt.Errorf("failed to get all notifications: %w", err)
+//	}
+//	defer rows.Close()
+//
+//	var notifications []models.Notification
+//	for rows.Next() {
+//		var n models.Notification
+//		var id, policyID, reqID pgtype.UUID
+//		err := rows.Scan(
+//			&id, &n.CreatedAt, &n.SentAt, &n.Type, &n.Subject, &n.Body,
+//			&policyID, &n.Status, &n.RecipientID, &reqID, &n.LastError, &n.LatestStatus,
+//			&n.StationID, &n.MetricID, &n.MetricName, &n.Operator, &n.Threshold,
+//			&n.ThresholdMin, &n.ThresholdMax, &n.Value,
+//		)
+//		if err != nil {
+//			return nil, fmt.Errorf("failed to scan notification: %w", err)
+//		}
+//		n.ID = id.Bytes
+//		n.NotificationPolicyID = policyID.Bytes
+//		n.RequestID = reqID.Bytes
+//		notifications = append(notifications, n)
+//	}
+//
+//	return notifications, nil
+//}

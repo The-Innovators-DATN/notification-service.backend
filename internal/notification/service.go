@@ -77,28 +77,31 @@ func (s *Service) worker(id int) {
 }
 
 func (s *Service) processTask(task models.Task) {
-	// Parse UUID từ task.RequestID
 	taskRequestID, err := uuid.Parse(task.RequestID)
+
 	if err != nil {
 		s.logger.Errorf("Invalid request ID %s: %v", task.RequestID, err)
 		return
 	}
 
-	// Tạo body bao gồm tất cả thông tin chi tiết
+	policyID, err := uuid.Parse(task.PolicyID)
+	if err != nil {
+		s.logger.Errorf("Invalid policy ID %s: %v", task.PolicyID, err)
+	}
+
 	bodyWithDetails := fmt.Sprintf(
 		"%s\nStation ID: %d\nMetric: %s (ID: %d)\nOperator: %s\nThreshold: %.2f (Min: %.2f, Max: %.2f)\nValue: %.2f",
 		task.Body, task.StationID, task.MetricName, task.MetricID, task.Operator,
 		task.Threshold, task.ThresholdMin, task.ThresholdMax, task.Value,
 	)
 
-	// Tạo bản ghi notification với trạng thái pending
 	notification := models.Notification{
 		ID:                   taskRequestID,
 		CreatedAt:            time.Now(),
 		Type:                 task.Status,
 		Subject:              task.Subject,
 		Body:                 bodyWithDetails,
-		NotificationPolicyID: [16]byte{},
+		NotificationPolicyID: policyID,
 		Status:               "pending",
 		RecipientID:          task.RecipientID,
 		RequestID:            taskRequestID,
@@ -119,41 +122,32 @@ func (s *Service) processTask(task models.Task) {
 		return
 	}
 
-	// Nếu task là "resolved", kiểm tra trạng thái gần nhất
 	if task.Status == "resolved" {
 		latestNotification, err := s.db.GetLatestNotification(s.ctx, task.RequestID)
 		if err == nil {
-			// Trường hợp 1: Đã có notification với latest_status = "resolved" và status = "sent"
 			if latestNotification.LatestStatus == "resolved" && latestNotification.Status == "sent" {
-				// Kiểm tra giá trị (value) để xem có cần gửi lại không
 				if latestNotification.Value == task.Value {
 					s.logger.Infof("Skipping resolved notification for alert_id=%s, already sent and resolved with same value (%.2f)", task.RequestID, task.Value)
 					_ = s.db.UpdateNotificationStatus(s.ctx, task.RequestID, "cancelled", "already sent and resolved with same value")
 					return
 				}
 				s.logger.Infof("Sending resolved notification for alert_id=%s, value changed (old: %.2f, new: %.2f)", task.RequestID, latestNotification.Value, task.Value)
-				// Tiếp tục gửi vì giá trị đã thay đổi
 			}
-			// Trường hợp 2: Đã có notification với latest_status = "resolved" nhưng status = "failed"
 			if latestNotification.LatestStatus == "resolved" && latestNotification.Status == "failed" {
 				s.logger.Infof("Sending resolved notification for alert_id=%s, previous attempt failed", task.RequestID)
-				// Tiếp tục gửi lại
 			}
 		}
 	}
 
-	// Tìm policy
-	policy, err := s.db.GetPolicyByTopicAndSeverity(s.ctx, task.Topic, task.Severity)
+	policy, err := s.db.GetPolicy(s.ctx, task.PolicyID)
 	if err != nil {
 		s.logger.Errorf("Failed to get policy for topic=%s, severity=%d: %v", task.Topic, task.Severity, err)
 		_ = s.db.UpdateNotificationStatus(s.ctx, task.RequestID, "failed", err.Error())
 		return
 	}
 
-	notification.NotificationPolicyID = policy.ID
 	_ = s.db.UpdateNotificationStatus(s.ctx, task.RequestID, "pending", "")
 
-	// Lấy contact point
 	cp, err := s.db.GetContactPoint(s.ctx, string(policy.ContactPointID[:]))
 	if err != nil {
 		s.logger.Errorf("Failed to get contact point %s: %v", policy.ContactPointID, err)
@@ -161,10 +155,8 @@ func (s *Service) processTask(task models.Task) {
 		return
 	}
 
-	// Cập nhật task.Body để gửi thông báo
 	task.Body = bodyWithDetails
 
-	// Gửi thông báo qua provider
 	providerFunc, exists := s.providerFuncs[cp.Type]
 	if !exists {
 		err := fmt.Errorf("unsupported provider type: %s", cp.Type)
@@ -173,7 +165,6 @@ func (s *Service) processTask(task models.Task) {
 		return
 	}
 
-	// Gọi providerFunc
 	err = providerFunc(task, s.config, cp)
 	if err != nil {
 		s.logger.Errorf("Failed to send via %s for alert_id=%s: %v", cp.Type, task.RequestID, err)

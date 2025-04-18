@@ -42,14 +42,18 @@ func main() {
 	svc.Start(&wg)
 
 	// Khởi chạy Kafka consumer
-	consumer, err := kafka.NewConsumer(cfg.Kafka.Broker, svc)
+	consumer, err := kafka.NewConsumer(
+		cfg.Kafka.Broker,  // broker
+		cfg.Kafka.Topic,   // topic
+		cfg.Kafka.GroupID, // groupID
+		svc,               // triển khai interface kafka.Service
+	)
 	if err != nil {
 		logger.Errorf("Failed to initialize Kafka consumer: %v", err)
 		log.Fatalf("Kafka consumer initialization failed: %v", err)
 	}
 	go consumer.Start(&wg)
 
-	// Khởi chạy API server
 	router := api.NewRouter(dbConn, logger, cfg)
 	go func() {
 		logger.Infof("Starting API server on :8080")
