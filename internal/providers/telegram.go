@@ -14,7 +14,7 @@ type telegramConfig struct {
 }
 
 func SendTelegram(task models.Task, cfg config.Config, cp models.ContactPoint) error {
-	botToken := cfg.Telegram.BotToken
+
 	if botToken == "" {
 		return fmt.Errorf("missing Telegram configuration: botToken is empty")
 	}

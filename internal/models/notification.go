@@ -3,24 +3,15 @@ package models
 import "time"
 
 type Notification struct {
-	ID                   [16]byte
-	CreatedAt            time.Time
-	SentAt               time.Time
-	Type                 string
-	Subject              string
-	Body                 string
-	NotificationPolicyID [16]byte
-	Status               string
-	RecipientID          int
-	RequestID            [16]byte
-	LastError            string
-	LatestStatus         string
-	StationID            int
-	MetricID             int
-	MetricName           string
-	Operator             string
-	Threshold            float64
-	ThresholdMin         float64
-	ThresholdMax         float64
-	Value                float64
+	ID                   [16]byte  `json:"id"`
+	CreatedAt            time.Time `json:"created_at"`
+	Type                 string    `json:"type"`
+	Subject              string    `json:"subject"`
+	Body                 string    `json:"body"`
+	NotificationPolicyID [16]byte  `json:"notification_policy_id"`
+	Status               string    `json:"status"`
+	DeliveryMethod       string    `json:"delivery_method"`
+	RecipientID          int64     `json:"recipient_id"`
+	RequestID            [16]byte  `json:"request_id"`
+	Error                string    `json:"error"`
 }

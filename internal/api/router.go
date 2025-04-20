@@ -13,7 +13,7 @@ func NewRouter(db *db.DB, logger *logging.Logger, cfg config.Config) *gin.Engine
 	r.Use(RequestLoggingMiddleware(logger))
 
 	h := NewHandler(db, logger)
-	api := r.Group("/api/v0")
+	api := r.Group(cfg.API.BasePath)
 	{
 		// Contact Points
 		api.POST("/contact-points", h.CreateContactPoint)
@@ -31,7 +31,7 @@ func NewRouter(db *db.DB, logger *logging.Logger, cfg config.Config) *gin.Engine
 
 		// Notifications
 		api.GET("/notifications/user/:user_id", h.GetNotificationsByUserID)
-		//api.GET("/notifications", h.GetAllNotifications)
+		api.GET("/notifications", h.GetAllNotifications)
 	}
 	return r
 }

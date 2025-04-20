@@ -23,14 +23,6 @@ type Config struct {
 		Username   string
 		Password   string
 	}
-	Telegram struct {
-		BotToken string
-	}
-	SMS struct {
-		AccountSID string
-		AuthToken  string
-		FromNumber string
-	}
 	API struct {
 		Port     string
 		BasePath string
@@ -63,14 +55,6 @@ func Load() (Config, error) {
 	}
 	cfg.Email.Username = os.Getenv("EMAIL_USERNAME")
 	cfg.Email.Password = os.Getenv("EMAIL_PASSWORD")
-
-	// Telegram
-	cfg.Telegram.BotToken = os.Getenv("TELEGRAM_BOT_TOKEN")
-
-	// SMS (Twilio)
-	cfg.SMS.AccountSID = os.Getenv("TWILIO_ACCOUNT_SID")
-	cfg.SMS.AuthToken = os.Getenv("TWILIO_AUTH_TOKEN")
-	cfg.SMS.FromNumber = os.Getenv("TWILIO_FROM_NUMBER")
 
 	// API
 	cfg.API.Port = os.Getenv("API_PORT")

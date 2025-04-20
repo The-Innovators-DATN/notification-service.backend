@@ -36,7 +36,6 @@ func New(db *db.DB, logger *logging.Logger, cfg config.Config) *Service {
 		cancel: cancel,
 		providerFuncs: map[string]func(task models.Task, cfg config.Config, cp models.ContactPoint) error{
 			"email":    providers.SendEmail,
-			"sms":      providers.SendSMS,
 			"telegram": providers.SendTelegram,
 		},
 	}

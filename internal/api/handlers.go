@@ -19,6 +19,7 @@ func NewHandler(db *db.DB, logger *logging.Logger) *Handler {
 	return &Handler{db: db, logger: logger}
 }
 
+// Contact Point
 func (h *Handler) CreateContactPoint(c *gin.Context) {
 	var cp models.ContactPoint
 	if err := c.ShouldBindJSON(&cp); err != nil {
@@ -27,7 +28,7 @@ func (h *Handler) CreateContactPoint(c *gin.Context) {
 		return
 	}
 
-	if err := h.db.CreateContactPoint(c.Request.Context(), cp); err != nil {
+	if _, err := h.db.CreateContactPoint(c.Request.Context(), cp); err != nil {
 		h.logger.Errorf("Failed to create contact point: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create contact point"})
 		return
@@ -39,7 +40,7 @@ func (h *Handler) CreateContactPoint(c *gin.Context) {
 
 func (h *Handler) GetContactPoint(c *gin.Context) {
 	id := c.Param("id")
-	cp, err := h.db.GetContactPoint(c.Request.Context(), id)
+	cp, err := h.db.GetContactPointById(c.Request.Context(), id)
 	if err != nil {
 		h.logger.Errorf("Failed to get contact point %s: %v", id, err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "Contact point not found"})
@@ -101,6 +102,7 @@ func (h *Handler) UpdateContactPoint(c *gin.Context) {
 	c.JSON(http.StatusOK, cp)
 }
 
+// Notification Policy
 func (h *Handler) CreatePolicy(c *gin.Context) {
 	var policy models.Policy
 	if err := c.ShouldBindJSON(&policy); err != nil {
@@ -121,7 +123,7 @@ func (h *Handler) CreatePolicy(c *gin.Context) {
 
 func (h *Handler) GetPolicy(c *gin.Context) {
 	id := c.Param("id")
-	policy, err := h.db.GetPolicy(c.Request.Context(), id)
+	policy, err := h.db.GetPolicyById(c.Request.Context(), id)
 	if err != nil {
 		h.logger.Errorf("Failed to get policy %s: %v", id, err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "Policy not found"})
@@ -183,6 +185,7 @@ func (h *Handler) UpdatePolicy(c *gin.Context) {
 	c.JSON(http.StatusOK, policy)
 }
 
+// Notifications
 func (h *Handler) GetNotificationsByUserID(c *gin.Context) {
 	userIDStr := c.Param("user_id")
 	userID, err := strconv.Atoi(userIDStr)
@@ -203,14 +206,14 @@ func (h *Handler) GetNotificationsByUserID(c *gin.Context) {
 	c.JSON(http.StatusOK, notifications)
 }
 
-//func (h *Handler) GetAllNotifications(c *gin.Context) {
-//	notifications, err := h.db.GetAllNotifications(c.Request.Context())
-//	if err != nil {
-//		h.logger.Errorf("Failed to get all notifications: %v", err)
-//		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get all notifications"})
-//		return
-//	}
-//
-//	h.logger.Infof("Retrieved %d notifications", len(notifications))
-//	c.JSON(http.StatusOK, notifications)
-//}
+func (h *Handler) GetAllNotifications(c *gin.Context) {
+	notifications, err := h.db.GetAllNotifications(c.Request.Context())
+	if err != nil {
+		h.logger.Errorf("Failed to get all notifications: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get all notifications"})
+		return
+	}
+
+	h.logger.Infof("Retrieved %d notifications", len(notifications))
+	c.JSON(http.StatusOK, notifications)
+}
