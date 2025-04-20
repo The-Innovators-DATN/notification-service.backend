@@ -14,6 +14,7 @@ import (
 	"notification-service/internal/providers"
 )
 
+// Service processes alert Tasks and dispatches Notifications according to user policies.
 type Service struct {
 	db            *db.DB
 	logger        *logging.Logger
@@ -22,29 +23,38 @@ type Service struct {
 	ctx           context.Context
 	cancel        context.CancelFunc
 	wg            *sync.WaitGroup
-	providerFuncs map[string]func(task models.Task, cfg config.Config, cp models.ContactPoint) error
+	providerFuncs map[string]func(context.Context, models.Notification, models.ContactPoint) error
 }
 
+// New constructs a notification Service.
 func New(db *db.DB, logger *logging.Logger, cfg config.Config) *Service {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Service{
+	svc := &Service{
 		db:     db,
 		logger: logger,
 		config: cfg,
 		tasks:  make(chan models.Task, cfg.Notification.QueueSize),
 		ctx:    ctx,
 		cancel: cancel,
-		providerFuncs: map[string]func(task models.Task, cfg config.Config, cp models.ContactPoint) error{
-			"email":    providers.SendEmail,
-			"telegram": providers.SendTelegram,
+	}
+	// initialize provider functions, injecting config where needed
+	svc.providerFuncs = map[string]func(context.Context, models.Notification, models.ContactPoint) error{
+		"email": func(ctx context.Context, notif models.Notification, cp models.ContactPoint) error {
+			return providers.SendEmail(ctx, notif, cp, svc.config)
+		},
+		"telegram": func(ctx context.Context, notif models.Notification, cp models.ContactPoint) error {
+			return providers.SendTelegram(ctx, notif, cp)
 		},
 	}
+	return svc
 }
 
+// Logger exposes the Service's logger to the Kafka consumer or caller.
 func (s *Service) Logger() *logging.Logger {
 	return s.logger
 }
 
+// Start launches the worker pool.
 func (s *Service) Start(wg *sync.WaitGroup) {
 	s.wg = wg
 	for i := 0; i < s.config.Notification.MaxWorkers; i++ {
@@ -53,15 +63,17 @@ func (s *Service) Start(wg *sync.WaitGroup) {
 	}
 }
 
+// QueueTask enqueues a Task for processing.
 func (s *Service) QueueTask(task models.Task) {
 	select {
 	case s.tasks <- task:
-		s.logger.Infof("Task queued: request_id=%s", task.RequestID)
+		s.logger.Infof("Queued task: request_id=%s", task.RequestID)
 	default:
-		s.logger.Errorf("Task queue full, dropping task: request_id=%s", task.RequestID)
+		s.logger.Errorf("Queue full, dropping task: request_id=%s", task.RequestID)
 	}
 }
 
+// worker processes Tasks until context is cancelled.
 func (s *Service) worker(id int) {
 	defer s.wg.Done()
 	for {
@@ -70,107 +82,114 @@ func (s *Service) worker(id int) {
 			s.logger.Infof("Worker %d stopped", id)
 			return
 		case task := <-s.tasks:
-			s.processTask(task)
+			s.handleTask(task)
 		}
 	}
 }
 
-func (s *Service) processTask(task models.Task) {
-	taskRequestID, err := uuid.Parse(task.RequestID)
-
+// handleTask retrieves policies, evaluates conditions, creates Notifications, and dispatches.
+func (s *Service) handleTask(task models.Task) {
+	// parse the request ID
+	reqID, err := uuid.Parse(task.RequestID)
 	if err != nil {
 		s.logger.Errorf("Invalid request ID %s: %v", task.RequestID, err)
 		return
 	}
 
-	policyID, err := uuid.Parse(task.PolicyID)
+	// fetch all active policies for the user
+	policies, err := s.db.GetPoliciesByUserID(s.ctx, task.RecipientID)
 	if err != nil {
-		s.logger.Errorf("Invalid policy ID %s: %v", task.PolicyID, err)
-	}
-
-	bodyWithDetails := fmt.Sprintf(
-		"%s\nStation ID: %d\nMetric: %s (ID: %d)\nOperator: %s\nThreshold: %.2f (Min: %.2f, Max: %.2f)\nValue: %.2f",
-		task.Body, task.StationID, task.MetricName, task.MetricID, task.Operator,
-		task.Threshold, task.ThresholdMin, task.ThresholdMax, task.Value,
-	)
-
-	notification := models.Notification{
-		ID:                   taskRequestID,
-		CreatedAt:            time.Now(),
-		Type:                 task.Status,
-		Subject:              task.Subject,
-		Body:                 bodyWithDetails,
-		NotificationPolicyID: policyID,
-		Status:               "pending",
-		RecipientID:          task.RecipientID,
-		RequestID:            taskRequestID,
-		LastError:            "",
-		LatestStatus:         task.Status,
-		StationID:            task.StationID,
-		MetricID:             task.MetricID,
-		MetricName:           task.MetricName,
-		Operator:             task.Operator,
-		Threshold:            task.Threshold,
-		ThresholdMin:         task.ThresholdMin,
-		ThresholdMax:         task.ThresholdMax,
-		Value:                task.Value,
-	}
-
-	if err := s.db.CreateNotification(s.ctx, notification); err != nil {
-		s.logger.Errorf("Failed to create notification for alert_id=%s: %v", task.RequestID, err)
+		s.logger.Errorf("Failed to load policies for user %d: %v", task.RecipientID, err)
 		return
 	}
 
-	if task.Status == "resolved" {
-		latestNotification, err := s.db.GetLatestNotification(s.ctx, task.RequestID)
-		if err == nil {
-			if latestNotification.LatestStatus == "resolved" && latestNotification.Status == "sent" {
-				if latestNotification.Value == task.Value {
-					s.logger.Infof("Skipping resolved notification for alert_id=%s, already sent and resolved with same value (%.2f)", task.RequestID, task.Value)
-					_ = s.db.UpdateNotificationStatus(s.ctx, task.RequestID, "cancelled", "already sent and resolved with same value")
-					return
-				}
-				s.logger.Infof("Sending resolved notification for alert_id=%s, value changed (old: %.2f, new: %.2f)", task.RequestID, latestNotification.Value, task.Value)
-			}
-			if latestNotification.LatestStatus == "resolved" && latestNotification.Status == "failed" {
-				s.logger.Infof("Sending resolved notification for alert_id=%s, previous attempt failed", task.RequestID)
-			}
+	// evaluate each policy
+	for _, pol := range policies {
+		// check severity against policy condition
+		if !evaluateCondition(pol.ConditionType, task.Severity, int(pol.Severity)) {
+			s.logger.Debugf("Policy %s skipped (severity %d does not satisfy %s %d)", uuid.UUID(pol.ID).String(), task.Severity, pol.ConditionType, pol.Severity)
+			continue
 		}
+
+		// prepare notification body with context
+		body := fmt.Sprintf(
+			"%s\nStation: %d\nMetric: %s\nValue: %.2f\nThreshold: %.2f",
+			task.Body,
+			task.StationID,
+			task.MetricName,
+			task.Value,
+			task.Threshold,
+		)
+
+		// create Notification record
+		notif := models.Notification{
+			ID:                   reqID,
+			CreatedAt:            time.Now(),
+			Type:                 task.TypeMessage, // "alert" or "resolved"
+			Subject:              task.Subject,
+			Body:                 body,
+			NotificationPolicyID: pol.ID,
+			Status:               "pending", // initial status
+			RecipientID:          task.RecipientID,
+			RequestID:            reqID,
+			Context: models.AlertContext{
+				StationID:    task.StationID,
+				MetricID:     task.MetricID,
+				MetricName:   task.MetricName,
+				Operator:     task.Operator,
+				Threshold:    task.Threshold,
+				ThresholdMin: task.ThresholdMin,
+				ThresholdMax: task.ThresholdMax,
+				Value:        task.Value,
+			},
+		}
+
+		// persist notification
+		if err := s.db.CreateNotification(s.ctx, notif); err != nil {
+			s.logger.Errorf("CreateNotification failed: %v", err)
+			continue
+		}
+
+		// load contact point
+		cp, err := s.db.GetContactPointByID(s.ctx, uuid.UUID(pol.ContactPointID).String())
+		if err != nil {
+			s.logger.Errorf("GetContactPoint failed: %v", err)
+			_ = s.db.UpdateNotificationStatus(s.ctx, task.RequestID, "failed", err.Error())
+			continue
+		}
+
+		// dispatch via provider
+		provider := s.providerFuncs[cp.Type]
+		err = provider(s.ctx, notif, cp)
+
+		// finalize status
+		final := "success"
+		if err != nil {
+			final = "failed"
+			s.logger.Errorf("Dispatch error via %s: %v", cp.Type, err)
+		}
+		_ = s.db.UpdateNotificationStatus(s.ctx, task.RequestID, final, fmt.Sprintf("%v", err))
+
+		s.logger.Infof("Policy %s dispatched %s via %s", uuid.UUID(pol.ID).String(), final, cp.Type)
 	}
+}
 
-	policy, err := s.db.GetPolicy(s.ctx, task.PolicyID)
-	if err != nil {
-		s.logger.Errorf("Failed to get policy for topic=%s, severity=%d: %v", task.Topic, task.Severity, err)
-		_ = s.db.UpdateNotificationStatus(s.ctx, task.RequestID, "failed", err.Error())
-		return
+// evaluateCondition checks if alertSeverity satisfies the policy condition.
+func evaluateCondition(cond string, alertSeverity, policySeverity int) bool {
+	switch cond {
+	case "EQ":
+		return alertSeverity == policySeverity
+	case "NEQ":
+		return alertSeverity != policySeverity
+	case "GT":
+		return alertSeverity > policySeverity
+	case "GTE":
+		return alertSeverity >= policySeverity
+	case "LT":
+		return alertSeverity < policySeverity
+	case "LTE":
+		return alertSeverity <= policySeverity
+	default:
+		return false
 	}
-
-	_ = s.db.UpdateNotificationStatus(s.ctx, task.RequestID, "pending", "")
-
-	cp, err := s.db.GetContactPoint(s.ctx, string(policy.ContactPointID[:]))
-	if err != nil {
-		s.logger.Errorf("Failed to get contact point %s: %v", policy.ContactPointID, err)
-		_ = s.db.UpdateNotificationStatus(s.ctx, task.RequestID, "failed", err.Error())
-		return
-	}
-
-	task.Body = bodyWithDetails
-
-	providerFunc, exists := s.providerFuncs[cp.Type]
-	if !exists {
-		err := fmt.Errorf("unsupported provider type: %s", cp.Type)
-		s.logger.Errorf("Failed to send notification for alert_id=%s: %v", task.RequestID, err)
-		_ = s.db.UpdateNotificationStatus(s.ctx, task.RequestID, "failed", err.Error())
-		return
-	}
-
-	err = providerFunc(task, s.config, cp)
-	if err != nil {
-		s.logger.Errorf("Failed to send via %s for alert_id=%s: %v", cp.Type, task.RequestID, err)
-		_ = s.db.UpdateNotificationStatus(s.ctx, task.RequestID, "failed", err.Error())
-		return
-	}
-
-	s.logger.Infof("Successfully sent notification via %s for alert_id=%s", cp.Type, task.RequestID)
-	_ = s.db.UpdateNotificationStatus(s.ctx, task.RequestID, "sent", "")
 }

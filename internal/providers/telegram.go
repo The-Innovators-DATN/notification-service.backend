@@ -1,52 +1,68 @@
 package providers
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"notification-service/internal/config"
+
+	"github.com/go-telegram/bot"
 	"notification-service/internal/models"
 )
 
+// telegramConfig holds bot token and chat ID for a Telegram contact point.
 type telegramConfig struct {
-	ChatID int64 `json:"chat_id"`
+	BotToken string `json:"bot_token"` // Telegram Bot API token
+	ChatID   int64  `json:"chat_id"`   // Destination chat ID
 }
 
-func SendTelegram(task models.Task, cfg config.Config, cp models.ContactPoint) error {
-
-	if botToken == "" {
-		return fmt.Errorf("missing Telegram configuration: botToken is empty")
+// SendTelegram sends a Notification via the go-telegram/bot library, using parameters defined in the contact point's Configuration JSON.
+func SendTelegram(ctx context.Context, notif models.Notification, cp models.ContactPoint) error {
+	// Parse configuration from ContactPoint.Configuration
+	var cfg telegramConfig
+	if err := json.Unmarshal([]byte(cp.Configuration), &cfg); err != nil {
+		return fmt.Errorf("invalid Telegram configuration for contact point %s: %w", cp.ID, err)
+	}
+	if cfg.BotToken == "" {
+		return fmt.Errorf("missing bot_token in Telegram configuration for contact point %s", cp.ID)
+	}
+	if cfg.ChatID == 0 {
+		return fmt.Errorf("missing chat_id in Telegram configuration for contact point %s", cp.ID)
 	}
 
-	var tConfig telegramConfig
-	if err := json.Unmarshal([]byte(cp.Configuration), &tConfig); err != nil {
-		return fmt.Errorf("failed to parse Telegram configuration for user_id=%d: %w", task.RecipientID, err)
-	}
-
-	if tConfig.ChatID == 0 {
-		return fmt.Errorf("chat_id not set in configuration for user_id=%d", task.RecipientID)
-	}
-
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", botToken)
-	payload := map[string]interface{}{
-		"chat_id": tConfig.ChatID,
-		"text":    fmt.Sprintf("%s\n%s", task.Subject, task.Body),
-	}
-	body, err := json.Marshal(payload)
+	// Initialize bot
+	b, err := bot.New(cfg.BotToken)
 	if err != nil {
-		return fmt.Errorf("failed to marshal Telegram payload for chat_id=%d: %w", tConfig.ChatID, err)
+		return fmt.Errorf("failed to initialize Telegram bot for contact point %s: %w", cp.ID, err)
 	}
 
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(body))
-	if err != nil {
-		return fmt.Errorf("failed to send Telegram message to chat_id=%d: %w", tConfig.ChatID, err)
-	}
-	defer resp.Body.Close()
+	// Compose message with contextual details (Markdown support)
+	text := fmt.Sprintf(
+		"*%s*\n%s\n\n"+
+			"*Station ID:* %d\n"+
+			"*Metric:* %s (ID %d)\n"+
+			"*Operator:* %s\n"+
+			"*Threshold:* %.2f (min %.2f, max %.2f)\n"+
+			"*Value:* %.2f",
+		notif.Subject,
+		notif.Body,
+		notif.Context.StationID,
+		notif.Context.MetricName,
+		notif.Context.MetricID,
+		notif.Context.Operator,
+		notif.Context.Threshold,
+		notif.Context.ThresholdMin,
+		notif.Context.ThresholdMax,
+		notif.Context.Value,
+	)
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("Telegram API returned status %d for chat_id=%d", resp.StatusCode, tConfig.ChatID)
+	// Send the message
+	params := &bot.SendMessageParams{
+		ChatID:    cfg.ChatID,
+		Text:      text,
+		ParseMode: "Markdown",
 	}
-
+	if _, err := b.SendMessage(ctx, params); err != nil {
+		return fmt.Errorf("failed to send Telegram message to chat_id %d: %w", cfg.ChatID, err)
+	}
 	return nil
 }

@@ -7,14 +7,29 @@ import (
 	"notification-service/internal/logging"
 )
 
+// RequestLoggingMiddleware logs incoming HTTP requests with latency, status code, client IP, and user-agent.
 func RequestLoggingMiddleware(logger *logging.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
-		path := c.Request.URL.Path
-		method := c.Request.Method
+
+		// Process request
 		c.Next()
+
+		// Calculate metrics
 		latency := time.Since(start)
 		status := c.Writer.Status()
-		logger.Infof("Request: %s %s, Status: %d, Latency: %v", method, path, status, latency)
+
+		// Use route pattern if available, fallback to URL path
+		path := c.FullPath()
+		if path == "" {
+			path = c.Request.URL.Path
+		}
+
+		// Additional context
+		clientIP := c.ClientIP()
+		userAgent := c.Request.UserAgent()
+
+		// Structured log message
+		logger.Infof("%s %s %s %d %v %s", clientIP, c.Request.Method, path, status, latency, userAgent)
 	}
 }

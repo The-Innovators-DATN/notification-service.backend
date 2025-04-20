@@ -3,180 +3,197 @@ package db
 import (
 	"context"
 	"fmt"
-	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/google/uuid"
 	"notification-service/internal/models"
 )
 
+// CreateNotification inserts a new notification record with nested AlertContext fields.
 func (d *DB) CreateNotification(ctx context.Context, n models.Notification) error {
+	// Ensure ID is set
+	if n.ID == [16]byte{} {
+		newID := uuid.New()
+		copy(n.ID[:], newID[:])
+	}
+	// Bind UUIDs
+	notifID := uuid.UUID(n.ID)
+	policyID := uuid.UUID(n.NotificationPolicyID)
+	reqID := uuid.UUID(n.RequestID)
+
 	query := `
-        INSERT INTO notifications (
-            id, created_at, type, subject, body, notification_policy_id, status, 
-            delivery_method, recipient_id, request_id, error
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
+	INSERT INTO notifications (
+		id, created_at, type, subject, body,
+		notification_policy_id, status, delivery_method,
+		recipient_id, request_id, error,
+		station_id, metric_id, metric_name, operator,
+		threshold, threshold_min, threshold_max, value
+	)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+	       $12, $13, $14, $15, $16, $17, $18, $19)`
+
 	_, err := d.Conn.Exec(ctx, query,
-		n.ID, n.CreatedAt, n.Type, n.Subject, n.Body, n.NotificationPolicyID,
-		n.Status, n.DeliveryMethod, n.RecipientID, n.RequestID, n.Error)
+		notifID,
+		n.CreatedAt,
+		n.Type,
+		n.Subject,
+		n.Body,
+		policyID,
+		n.Status,
+		n.DeliveryMethod,
+		n.RecipientID,
+		reqID,
+		n.Error,
+		n.Context.StationID,
+		n.Context.MetricID,
+		n.Context.MetricName,
+		n.Context.Operator,
+		n.Context.Threshold,
+		n.Context.ThresholdMin,
+		n.Context.ThresholdMax,
+		n.Context.Value,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to create notification: %w", err)
 	}
 	return nil
 }
 
-func (d *DB) UpdateNotificationStatus(ctx context.Context, requestID, status, error string) error {
+// UpdateNotificationStatus updates status and error by request ID.
+func (d *DB) UpdateNotificationStatus(ctx context.Context, requestIDStr, status, errMsg string) error {
+	reqID, err := uuid.Parse(requestIDStr)
+	if err != nil {
+		return fmt.Errorf("invalid request_id UUID: %w", err)
+	}
+
 	query := `
-        UPDATE notifications
-        SET status = $1, error = $2,
-        WHERE request_id::text = $3`
-	result, err := d.Conn.Exec(ctx, query, status, error, requestID)
+	UPDATE notifications
+	SET status = $1,
+	    error = $2,
+	    updated_at = NOW()
+	WHERE request_id = $3`
+
+	res, err := d.Conn.Exec(ctx, query, status, errMsg, reqID)
 	if err != nil {
 		return fmt.Errorf("failed to update notification status: %w", err)
 	}
-	rowsAffected := result.RowsAffected()
-	if rowsAffected == 0 {
-		return fmt.Errorf("no notification updated for request_id %s", requestID)
+	if res.RowsAffected() == 0 {
+		return fmt.Errorf("no notification updated for request_id %s", requestIDStr)
 	}
 	return nil
 }
 
-//func (d *DB) GetLatestNotification(ctx context.Context, requestID string) (models.Notification, error) {
-//	var n models.Notification
-//	var id, policyID, reqID pgtype.UUID
-//
-//	query := `
-//        SELECT id, created_at, type, subject, body, notification_policy_id, status,
-//               recipient_id, request_id, last_error, latest_status, station_id, metric_id,
-//               metric_name, operator, threshold, threshold_min, threshold_max, value
-//        FROM notifications
-//        WHERE request_id::text = $1
-//        ORDER BY created_at DESC
-//        LIMIT 1`
-//	err := d.Conn.QueryRow(ctx, query, requestID).Scan(
-//		&id, &n.CreatedAt, &n.SentAt, &n.Type, &n.Subject, &n.Body,
-//		&policyID, &n.Status, &n.RecipientID, &reqID, &n.LastError, &n.LatestStatus,
-//		&n.StationID, &n.MetricID, &n.MetricName, &n.Operator, &n.Threshold,
-//		&n.ThresholdMin, &n.ThresholdMax, &n.Value,
-//	)
-//	if err != nil {
-//		if err == pgx.ErrNoRows {
-//			return models.Notification{}, fmt.Errorf("no notification found for request_id %s", requestID)
-//		}
-//		return models.Notification{}, fmt.Errorf("failed to get latest notification for request_id %s: %w", requestID, err)
-//	}
-//
-//	n.ID = id.Bytes
-//	n.NotificationPolicyID = policyID.Bytes
-//	n.RequestID = reqID.Bytes
-//	return n, nil
-//}
-
-func (d *DB) GetNotificationsByUserID(ctx context.Context, userID, limit, offset int, status string) ([]models.Notification, int, error) {
-	var (
-		query   string
-		args    []interface{}
-		counter int
-	)
-
-	// Base query and args
-	query = `
-        SELECT id, created_at, type, subject, body, notification_policy_id, status, 
-               delivery_method, recipient_id, request_id, error
-        FROM notifications
-        WHERE recipient_id = $1`
-	args = append(args, userID)
-
-	countQuery := "SELECT COUNT(*) FROM notifications WHERE recipient_id = $1"
+// GetNotificationsByUserID returns a paginated list of notifications including AlertContext.
+func (d *DB) GetNotificationsByUserID(ctx context.Context, userID, limit, offset int, statusFilter string) ([]models.Notification, int, error) {
+	// Count total
+	countQuery := `SELECT COUNT(*) FROM notifications WHERE recipient_id = $1`
 	countArgs := []interface{}{userID}
-
-	// Apply status filter
-	if status != "all" {
-		query += " AND status = $2"
+	if statusFilter != "all" {
 		countQuery += " AND status = $2"
-		countArgs = append(countArgs, status)
-		args = append(args, status)
-	} else {
-		args = append(args, limit, offset)
+		countArgs = append(countArgs, statusFilter)
 	}
 
-	err := d.Conn.QueryRow(ctx, countQuery, countArgs...).Scan(&counter)
+	var total int
+	err := d.Conn.QueryRow(ctx, countQuery, countArgs...).Scan(&total)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to count notifications: %w", err)
 	}
 
-	// Add ordering and pagination
+	// Fetch rows
+	query := `
+	SELECT id, created_at, type, subject, body,
+	       notification_policy_id, status, delivery_method,
+	       recipient_id, request_id, error,
+	       station_id, metric_id, metric_name, operator,
+	       threshold, threshold_min, threshold_max, value
+	FROM notifications
+	WHERE recipient_id = $1`
+	args := []interface{}{userID}
+	if statusFilter != "all" {
+		query += " AND status = $2"
+		args = append(args, statusFilter)
+	}
 	query += " ORDER BY created_at DESC LIMIT $3 OFFSET $4"
+	args = append(args, limit, offset)
 
 	rows, err := d.Conn.Query(ctx, query, args...)
 	if err != nil {
-		return nil, 0, fmt.Errorf("failed to get notifications by user_id %d and status %s: %w", userID, status, err)
+		return nil, 0, fmt.Errorf("failed to get notifications: %w", err)
 	}
 	defer rows.Close()
 
-	var notifications []models.Notification
+	var list []models.Notification
 	for rows.Next() {
 		var n models.Notification
-		var id, policyID, requestID pgtype.UUID
-		var errorText pgtype.Text
+		var idUUID, policyUUID, reqUUID uuid.UUID
+		var errText *string
 
-		err := rows.Scan(
-			&id, &n.CreatedAt, &n.Type, &n.Subject, &n.Body,
-			&policyID, &n.Status, &n.DeliveryMethod, &n.RecipientID,
-			&requestID, &errorText,
+		err = rows.Scan(
+			&idUUID,
+			&n.CreatedAt,
+			&n.Type,
+			&n.Subject,
+			&n.Body,
+			&policyUUID,
+			&n.Status,
+			&n.DeliveryMethod,
+			&n.RecipientID,
+			&reqUUID,
+			&errText,
+			&n.Context.StationID,
+			&n.Context.MetricID,
+			&n.Context.MetricName,
+			&n.Context.Operator,
+			&n.Context.Threshold,
+			&n.Context.ThresholdMin,
+			&n.Context.ThresholdMax,
+			&n.Context.Value,
 		)
 		if err != nil {
 			return nil, 0, fmt.Errorf("failed to scan notification: %w", err)
 		}
-
-		if id.Valid {
-			n.ID = id.Bytes
+		// Copy IDs
+		copy(n.ID[:], idUUID[:])
+		copy(n.NotificationPolicyID[:], policyUUID[:])
+		copy(n.RequestID[:], reqUUID[:])
+		if errText != nil {
+			n.Error = *errText
 		}
-		if policyID.Valid {
-			n.NotificationPolicyID = policyID.Bytes
-		}
-		if requestID.Valid {
-			n.RequestID = requestID.Bytes
-		}
-		if errorText.Valid {
-			n.Error = errorText.String
-		}
-
-		notifications = append(notifications, n)
+		list = append(list, n)
 	}
 
-	return notifications, counter, nil
+	return list, total, nil
 }
 
-func (d *DB) GetAllNotifications(ctx context.Context, status string, limit, offset int) ([]models.Notification, int, error) {
-	var (
-		query   string
-		args    []interface{}
-		counter int
-	)
-
-	query = `
-        SELECT id, created_at, type, subject, body, notification_policy_id, status, 
-               delivery_method, recipient_id, request_id, error
-		FROM notifications`
-	args = []interface{}{}
+// GetAllNotifications returns all notifications with optional status filter and pagination.
+func (d *DB) GetAllNotifications(ctx context.Context, statusFilter string, limit, offset int) ([]models.Notification, int, error) {
+	// Count total
 	countQuery := `SELECT COUNT(*) FROM notifications`
 	countArgs := []interface{}{}
-
-	if status != "all" {
-		query += " WHERE status = $3"
+	if statusFilter != "all" {
 		countQuery += " WHERE status = $1"
-		args = append(args, limit, offset, status)
-		countArgs = append(countArgs, status)
-	} else {
-		args = append(args, limit, offset)
+		countArgs = append(countArgs, statusFilter)
 	}
 
-	// Count total notifications
-	err := d.Conn.QueryRow(ctx, countQuery, countArgs...).Scan(&counter)
+	var total int
+	err := d.Conn.QueryRow(ctx, countQuery, countArgs...).Scan(&total)
 	if err != nil {
-		return nil, 0, fmt.Errorf("failed to count all notifications: %w", err)
+		return nil, 0, fmt.Errorf("failed to count notifications: %w", err)
 	}
 
-	query += " ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+	// Fetch rows
+	query := `
+	SELECT id, created_at, type, subject, body,
+	       notification_policy_id, status, delivery_method,
+	       recipient_id, request_id, error,
+	       station_id, metric_id, metric_name, operator,
+	       threshold, threshold_min, threshold_max, value
+	FROM notifications`
+	args := []interface{}{}
+	if statusFilter != "all" {
+		query += " WHERE status = $1"
+		args = append(args, statusFilter)
+	}
+	query += " ORDER BY created_at DESC LIMIT $2 OFFSET $3"
+	args = append(args, limit, offset)
 
 	rows, err := d.Conn.Query(ctx, query, args...)
 	if err != nil {
@@ -184,36 +201,44 @@ func (d *DB) GetAllNotifications(ctx context.Context, status string, limit, offs
 	}
 	defer rows.Close()
 
-	var notifications []models.Notification
+	var list []models.Notification
 	for rows.Next() {
 		var n models.Notification
-		var id, policyID, requestID pgtype.UUID
-		var errorText pgtype.Text
+		var idUUID, policyUUID, reqUUID uuid.UUID
+		var errText *string
 
-		err := rows.Scan(
-			&id, &n.CreatedAt, &n.Type, &n.Subject, &n.Body,
-			&policyID, &n.Status, &n.DeliveryMethod, &n.RecipientID,
-			&requestID, &errorText,
+		err = rows.Scan(
+			&idUUID,
+			&n.CreatedAt,
+			&n.Type,
+			&n.Subject,
+			&n.Body,
+			&policyUUID,
+			&n.Status,
+			&n.DeliveryMethod,
+			&n.RecipientID,
+			&reqUUID,
+			&errText,
+			&n.Context.StationID,
+			&n.Context.MetricID,
+			&n.Context.MetricName,
+			&n.Context.Operator,
+			&n.Context.Threshold,
+			&n.Context.ThresholdMin,
+			&n.Context.ThresholdMax,
+			&n.Context.Value,
 		)
 		if err != nil {
 			return nil, 0, fmt.Errorf("failed to scan notification: %w", err)
 		}
-
-		if id.Valid {
-			n.ID = id.Bytes
+		copy(n.ID[:], idUUID[:])
+		copy(n.NotificationPolicyID[:], policyUUID[:])
+		copy(n.RequestID[:], reqUUID[:])
+		if errText != nil {
+			n.Error = *errText
 		}
-		if policyID.Valid {
-			n.NotificationPolicyID = policyID.Bytes
-		}
-		if requestID.Valid {
-			n.RequestID = requestID.Bytes
-		}
-		if errorText.Valid {
-			n.Error = errorText.String
-		}
-
-		notifications = append(notifications, n)
+		list = append(list, n)
 	}
 
-	return notifications, counter, nil
+	return list, total, nil
 }
