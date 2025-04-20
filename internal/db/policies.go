@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"github.com/google/uuid"
 	"notification-service/internal/models"
@@ -25,16 +26,16 @@ func (d *DB) CreatePolicy(ctx context.Context, p models.Policy) error {
 
 	query := `
 	INSERT INTO notification_policy (
-		id, contact_point_id, severity, status, action, created_at, updated_at, condition_type
+		id, contact_point_id, severity, status, action, condition_type, created_at, updated_at
 	)
-	VALUES ($1, $2, $3, $4, $5, NOW(), NOW(), $6)
+	VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
 	ON CONFLICT (id) DO UPDATE
 	SET contact_point_id = EXCLUDED.contact_point_id,
-	    severity = EXCLUDED.severity,
-	    status = EXCLUDED.status,
-	    action = EXCLUDED.action,
-	    condition_type = EXCLUDED.condition_type,
-	    updated_at = NOW()`
+	    severity         = EXCLUDED.severity,
+	    status           = EXCLUDED.status,
+	    action           = EXCLUDED.action,
+	    condition_type   = EXCLUDED.condition_type,
+	    updated_at       = NOW()`
 
 	_, err := d.Conn.Exec(ctx, query,
 		policyID,
@@ -50,7 +51,7 @@ func (d *DB) CreatePolicy(ctx context.Context, p models.Policy) error {
 	return nil
 }
 
-// GetPolicyByID retrieves an active policy by its UUID string.
+// GetPolicyByID retrieves an active policy and its contact point (if active).
 func (d *DB) GetPolicyByID(ctx context.Context, idStr string) (models.Policy, error) {
 	id, err := uuid.Parse(idStr)
 	if err != nil {
@@ -58,38 +59,72 @@ func (d *DB) GetPolicyByID(ctx context.Context, idStr string) (models.Policy, er
 	}
 
 	query := `
-	SELECT id, contact_point_id, severity, status, action, created_at, updated_at, condition_type
-	FROM notification_policy
-	WHERE id = $1 AND status = 'active'`
+	SELECT
+		p.id, p.contact_point_id, p.severity, p.status, p.action, p.condition_type, p.created_at, p.updated_at,
+		cp.id, cp.name, cp.user_id, cp.type, cp.configuration, cp.status, cp.created_at, cp.updated_at
+	FROM notification_policy p
+	LEFT JOIN contact_points cp
+	  ON p.contact_point_id = cp.id AND cp.status = 'active'
+	WHERE p.id = $1 AND p.status = 'active'`
+
+	row := d.Conn.QueryRow(ctx, query, id)
 
 	var p models.Policy
-	var fetchedID, contactID uuid.UUID
-	err = d.Conn.QueryRow(ctx, query, id).Scan(
-		&fetchedID,
-		&contactID,
+	var cpID sql.NullString
+	var cpName, cpType, cpConfig, cpStatus sql.NullString
+	var cpUserID sql.NullInt64
+	var cpCreated, cpUpdated sql.NullTime
+
+	err = row.Scan(
+		&p.ID,
+		&p.ContactPointID,
 		&p.Severity,
 		&p.Status,
 		&p.Action,
+		&p.ConditionType,
 		&p.CreatedAt,
 		&p.UpdatedAt,
-		&p.ConditionType,
+		&cpID,
+		&cpName,
+		&cpUserID,
+		&cpType,
+		&cpConfig,
+		&cpStatus,
+		&cpCreated,
+		&cpUpdated,
 	)
 	if err != nil {
 		return models.Policy{}, fmt.Errorf("failed to get policy: %w", err)
 	}
-	copy(p.ID[:], fetchedID[:])
-	copy(p.ContactPointID[:], contactID[:])
+
+	// Populate nested ContactPoint only if present
+	if cpID.Valid {
+		uid, _ := uuid.Parse(cpID.String)
+		var cp models.ContactPoint
+		copy(cp.ID[:], uid[:])
+		cp.Name = cpName.String
+		cp.UserID = cpUserID.Int64
+		cp.Type = cpType.String
+		cp.Configuration = cpConfig.String
+		cp.Status = cpStatus.String
+		cp.CreatedAt = cpCreated.Time
+		cp.UpdatedAt = cpUpdated.Time
+		p.ContactPoint = &cp
+	}
+
 	return p, nil
 }
 
-// GetPoliciesByUserID returns all active policies for a given user.
+// GetPoliciesByUserID returns all active policies (and their contact points) for a user.
 func (d *DB) GetPoliciesByUserID(ctx context.Context, userID int64) ([]models.Policy, error) {
 	query := `
-	SELECT np.id, np.contact_point_id, np.severity, np.status, np.action,
-	       np.created_at, np.updated_at, np.condition_type
+	SELECT
+		np.id, np.contact_point_id, np.severity, np.status, np.action, np.condition_type, np.created_at, np.updated_at,
+		cp.id, cp.name, cp.user_id, cp.type, cp.configuration, cp.status, cp.created_at, cp.updated_at
 	FROM notification_policy np
-	JOIN contact_points cp ON np.contact_point_id = cp.id
-	WHERE cp.user_id = $1 AND np.status = 'active'`
+	LEFT JOIN contact_points cp
+	  ON np.contact_point_id = cp.id AND cp.user_id = $1 AND cp.status = 'active'
+	WHERE np.status = 'active'`
 
 	rows, err := d.Conn.Query(ctx, query, userID)
 	if err != nil {
@@ -100,24 +135,50 @@ func (d *DB) GetPoliciesByUserID(ctx context.Context, userID int64) ([]models.Po
 	var policies []models.Policy
 	for rows.Next() {
 		var p models.Policy
-		var fetchedID, contactID uuid.UUID
+		var cpID sql.NullString
+		var cpName, cpType, cpConfig, cpStatus sql.NullString
+		var cpUserID sql.NullInt64
+		var cpCreated, cpUpdated sql.NullTime
+
 		err := rows.Scan(
-			&fetchedID,
-			&contactID,
+			&p.ID,
+			&p.ContactPointID,
 			&p.Severity,
 			&p.Status,
 			&p.Action,
+			&p.ConditionType,
 			&p.CreatedAt,
 			&p.UpdatedAt,
-			&p.ConditionType,
+			&cpID,
+			&cpName,
+			&cpUserID,
+			&cpType,
+			&cpConfig,
+			&cpStatus,
+			&cpCreated,
+			&cpUpdated,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan policy: %w", err)
 		}
-		copy(p.ID[:], fetchedID[:])
-		copy(p.ContactPointID[:], contactID[:])
+
+		if cpID.Valid {
+			uid, _ := uuid.Parse(cpID.String)
+			var cp models.ContactPoint
+			copy(cp.ID[:], uid[:])
+			cp.Name = cpName.String
+			cp.UserID = cpUserID.Int64
+			cp.Type = cpType.String
+			cp.Configuration = cpConfig.String
+			cp.Status = cpStatus.String
+			cp.CreatedAt = cpCreated.Time
+			cp.UpdatedAt = cpUpdated.Time
+			p.ContactPoint = &cp
+		}
+
 		policies = append(policies, p)
 	}
+
 	return policies, nil
 }
 

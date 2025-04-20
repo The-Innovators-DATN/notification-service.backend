@@ -21,39 +21,31 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Khởi tạo logger
-	logger, err := logging.New()
+	// Initialize logger                     S
+	logger, err := logging.New("./logs", "info")
 	if err != nil {
 		log.Fatalf("Failed to init logger: %v", err)
 	}
-	defer logger.Close()
+	// Lưu ý: Xóa defer logger.Close() vì *logging.Logger không có phương thức Close
 
-	// Kết nối database
+	// Connect to database
 	dbConn, err := db.New(cfg.DB.DSN)
 	if err != nil {
 		logger.Errorf("Failed to connect to database: %v", err)
 		log.Fatalf("Database connection failed: %v", err)
 	}
-	defer dbConn.Close()
+	defer dbConn.Close() // Giả sử dbConn có phương thức Close
 
-	// Khởi tạo notification service
+	// Initialize notification service
 	svc := notification.New(dbConn, logger, cfg)
 	var wg sync.WaitGroup
 	svc.Start(&wg)
 
-	// Khởi chạy Kafka consumer
-	consumer, err := kafka.NewConsumer(
-		cfg.Kafka.Broker,  // broker
-		cfg.Kafka.Topic,   // topic
-		cfg.Kafka.GroupID, // groupID
-		svc,               // triển khai interface kafka.Service
-	)
-	if err != nil {
-		logger.Errorf("Failed to initialize Kafka consumer: %v", err)
-		log.Fatalf("Kafka consumer initialization failed: %v", err)
-	}
+	// Initialize Kafka consumer
+	consumer := kafka.NewConsumer([]string{cfg.Kafka.Broker}, cfg.Kafka.Topic, cfg.Kafka.GroupID, svc)
 	go consumer.Start(&wg)
 
+	// Start API server
 	router := api.NewRouter(dbConn, logger, cfg)
 	go func() {
 		logger.Infof("Starting API server on :8080")
@@ -67,7 +59,7 @@ func main() {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	<-sigChan
 	logger.Infof("Shutting down service...")
-	consumer.Close()
+	consumer.Close() // Giả sử Consumer có phương thức Close
 	wg.Wait()
 	logger.Infof("Service stopped gracefully")
 }

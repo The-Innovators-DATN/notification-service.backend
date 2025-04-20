@@ -26,7 +26,7 @@ type Service struct {
 	providerFuncs map[string]func(context.Context, models.Notification, models.ContactPoint) error
 }
 
-// New constructs a notification Service.
+// New constructs a notification Service .
 func New(db *db.DB, logger *logging.Logger, cfg config.Config) *Service {
 	ctx, cancel := context.WithCancel(context.Background())
 	svc := &Service{
@@ -111,6 +111,11 @@ func (s *Service) handleTask(task models.Task) {
 			continue
 		}
 
+		if pol.ContactPoint == nil {
+			s.logger.Warnf("Policy %s has no active contact point, skipping", uuid.UUID(pol.ID))
+			continue
+		}
+
 		// prepare notification body with context
 		body := fmt.Sprintf(
 			"%s\nStation: %d\nMetric: %s\nValue: %.2f\nThreshold: %.2f",
@@ -125,6 +130,7 @@ func (s *Service) handleTask(task models.Task) {
 		notif := models.Notification{
 			ID:                   reqID,
 			CreatedAt:            time.Now(),
+			UpdatedAt:            time.Now(),
 			Type:                 task.TypeMessage, // "alert" or "resolved"
 			Subject:              task.Subject,
 			Body:                 body,
@@ -150,27 +156,19 @@ func (s *Service) handleTask(task models.Task) {
 			continue
 		}
 
-		// load contact point
-		cp, err := s.db.GetContactPointByID(s.ctx, uuid.UUID(pol.ContactPointID).String())
-		if err != nil {
-			s.logger.Errorf("GetContactPoint failed: %v", err)
-			_ = s.db.UpdateNotificationStatus(s.ctx, task.RequestID, "failed", err.Error())
-			continue
-		}
-
 		// dispatch via provider
-		provider := s.providerFuncs[cp.Type]
-		err = provider(s.ctx, notif, cp)
+		provider := s.providerFuncs[pol.ContactPoint.Type]
+		err = provider(s.ctx, notif, *pol.ContactPoint)
 
 		// finalize status
 		final := "success"
 		if err != nil {
 			final = "failed"
-			s.logger.Errorf("Dispatch error via %s: %v", cp.Type, err)
+			s.logger.Errorf("Dispatch error via %s: %v", pol.ContactPoint.Type, err)
 		}
 		_ = s.db.UpdateNotificationStatus(s.ctx, task.RequestID, final, fmt.Sprintf("%v", err))
 
-		s.logger.Infof("Policy %s dispatched %s via %s", uuid.UUID(pol.ID).String(), final, cp.Type)
+		s.logger.Infof("Policy %s dispatched %s via %s", uuid.UUID(pol.ID).String(), final, pol.ContactPoint.Type)
 	}
 }
 
