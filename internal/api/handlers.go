@@ -208,7 +208,7 @@ func (h *Handler) DeletePolicy(c *gin.Context) {
 	}
 
 	h.logger.Infof("deleted policy %s", id)
-	c.Status(http.StatusNoContent)
+	c.JSON(http.StatusOK, StandardResponse{true, "policies deleted", nil})
 }
 
 // UpdatePolicy updates an existing policy and returns it

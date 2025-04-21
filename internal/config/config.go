@@ -33,6 +33,10 @@ type Config struct {
 		QueueSize  int
 		MaxWorkers int
 	}
+	Logging struct {
+		Level string
+		Dir   string
+	}
 }
 
 // Load reads environment variables, applies defaults, and returns a Config.
@@ -64,6 +68,10 @@ func Load() (Config, error) {
 	// API settings
 	cfg.API.Port = os.Getenv("API_PORT")
 	cfg.API.BasePath = os.Getenv("API_BASE_PATH")
+
+	// Logging settings
+	cfg.Logging.Level = os.Getenv("LOG_LEVEL")
+	cfg.Logging.Dir = os.Getenv("LOG_DIR")
 
 	// Notification worker settings
 	if qs, err := strconv.Atoi(os.Getenv("QUEUE_SIZE")); err == nil {

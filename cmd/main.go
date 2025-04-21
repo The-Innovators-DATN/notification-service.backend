@@ -22,7 +22,7 @@ func main() {
 	}
 
 	// Initialize logger                     S
-	logger, err := logging.New("./logs", "info")
+	logger, err := logging.New(cfg.Logging.Dir, cfg.Logging.Level)
 	if err != nil {
 		log.Fatalf("Failed to init logger: %v", err)
 	}
@@ -46,7 +46,7 @@ func main() {
 	go consumer.Start(&wg)
 
 	// Start API server
-	router := api.NewRouter(dbConn, logger, cfg)
+	router := api.NewRouter(logger, cfg)
 	go func() {
 		logger.Infof("Starting API server on :8080")
 		if err := router.Run(":8080"); err != nil {

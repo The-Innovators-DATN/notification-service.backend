@@ -3,16 +3,14 @@ package api
 import (
 	"github.com/gin-gonic/gin"
 	"notification-service/internal/config"
-	"notification-service/internal/db"
 	"notification-service/internal/logging"
 )
 
 // NewRouter configures routes and middleware for the notification service API.
-func NewRouter(db *db.DB, logger *logging.Logger, cfg config.Config) *gin.Engine {
+func NewRouter(logger *logging.Logger, cfg config.Config) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery(), RequestLoggingMiddleware(logger))
 
-	// Base group (e.g., /api/v1)
 	rApi := r.Group(cfg.API.BasePath)
 	// Health check
 	rApi.GET("/health", func(c *gin.Context) {
