@@ -7,10 +7,10 @@ import (
 )
 
 // NewRouter configures routes and middleware for the notification service API.
-func NewRouter(logger *logging.Logger, cfg config.Config) *gin.Engine {
+func NewRouter(logger *logging.Logger, cfg config.Config, handler *Handler) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery(), RequestLoggingMiddleware(logger))
-
+	r.Use(injectHandler(handler))
 	rApi := r.Group(cfg.API.BasePath)
 	// Health check
 	rApi.GET("/health", func(c *gin.Context) {

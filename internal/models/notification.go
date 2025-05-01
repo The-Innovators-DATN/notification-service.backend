@@ -1,6 +1,10 @@
 package models
 
-import "time"
+import (
+	"encoding/json"
+	"github.com/google/uuid"
+	"time"
+)
 
 // AlertContext holds contextual alert details pulled from metrics.
 type AlertContext struct {
@@ -31,4 +35,20 @@ type Notification struct {
 	Context              AlertContext  `json:"context,omitempty"`
 	Policy               *Policy       `json:"policy,omitempty"`        // Added for response, not stored in DB
 	ContactPoint         *ContactPoint `json:"contact_point,omitempty"` // Added for response, not stored in DB
+}
+
+// MarshalJSON customizes JSON serialization for Notification to return UUIDs as strings.
+func (n Notification) MarshalJSON() ([]byte, error) {
+	type Alias Notification
+	return json.Marshal(&struct {
+		ID                   string `json:"id"`
+		NotificationPolicyID string `json:"notification_policy_id"`
+		RequestID            string `json:"request_id"`
+		*Alias
+	}{
+		ID:                   uuid.UUID(n.ID).String(),
+		NotificationPolicyID: uuid.UUID(n.NotificationPolicyID).String(),
+		RequestID:            uuid.UUID(n.RequestID).String(),
+		Alias:                (*Alias)(&n),
+	})
 }

@@ -46,7 +46,8 @@ func main() {
 	go consumer.Start(&wg)
 
 	// Start API server
-	router := api.NewRouter(logger, cfg)
+	handler := api.NewHandler(dbConn, logger)
+	router := api.NewRouter(logger, cfg, handler)
 	go func() {
 		logger.Infof("Starting API server on :8080")
 		if err := router.Run(":8080"); err != nil {

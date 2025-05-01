@@ -33,3 +33,10 @@ func RequestLoggingMiddleware(logger *logging.Logger) gin.HandlerFunc {
 		logger.Infof("%s %s %s %d %v %s", clientIP, c.Request.Method, path, status, latency, userAgent)
 	}
 }
+
+func injectHandler(handler *Handler) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Set("handler", handler)
+		c.Next()
+	}
+}
