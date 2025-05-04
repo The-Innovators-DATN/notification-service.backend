@@ -9,64 +9,39 @@ import (
 
 // CreateContactPoint inserts a new contact point or updates an existing one.
 func (d *DB) CreateContactPoint(ctx context.Context, cp models.ContactPoint) (models.ContactPoint, error) {
-	// Validate input
+	// Ensure ID is set
 	if cp.ID == [16]byte{} {
 		newID := uuid.New()
 		copy(cp.ID[:], newID[:])
 	}
-	if cp.Name == "" {
-		return models.ContactPoint{}, fmt.Errorf("name cannot be empty")
-	}
-	if cp.Type == "" {
-		return models.ContactPoint{}, fmt.Errorf("type cannot be empty")
-	}
-	if cp.Status == "" {
-		return models.ContactPoint{}, fmt.Errorf("status cannot be empty")
-	}
-
-	// Convert to uuid.UUID for DB binding
-	idUUID := uuid.UUID(cp.ID)
 
 	query := `
-	INSERT INTO contact_points
-	    (id, name, user_id, type, configuration, status, created_at, updated_at)
-	VALUES
-	    ($1, $2, $3, $4, $5, $6, NOW(), NOW())
-	ON CONFLICT (id) DO UPDATE
-	    SET name = EXCLUDED.name,
-	        user_id = EXCLUDED.user_id,
-	        type = EXCLUDED.type,
-	        configuration = EXCLUDED.configuration,
-	        status = EXCLUDED.status,
-	        updated_at = NOW()
-	RETURNING id, name, user_id, type, configuration, status, created_at, updated_at`
+	INSERT INTO contact_points (
+		id, name, user_id, type, configuration, status, created_at, updated_at
+	)
+	VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+	RETURNING id, created_at, updated_at`
 
-	var result models.ContactPoint
-	var returnedID uuid.UUID
+	var created models.ContactPoint
 	err := d.Conn.QueryRow(ctx, query,
-		idUUID,
+		uuid.UUID(cp.ID),
 		cp.Name,
 		cp.UserID,
 		cp.Type,
-		cp.Configuration,
+		cp.Configuration, // Directly bind the map as JSONB
 		cp.Status,
-	).Scan(
-		&returnedID,
-		&result.Name,
-		&result.UserID,
-		&result.Type,
-		&result.Configuration,
-		&result.Status,
-		&result.CreatedAt,
-		&result.UpdatedAt,
-	)
+	).Scan(&created.ID, &created.CreatedAt, &created.UpdatedAt)
 	if err != nil {
 		return models.ContactPoint{}, fmt.Errorf("failed to create contact point: %w", err)
 	}
-	// Copy back to model's ID field
-	copy(result.ID[:], returnedID[:])
 
-	return result, nil
+	created.Name = cp.Name
+	created.UserID = cp.UserID
+	created.Type = cp.Type
+	created.Configuration = cp.Configuration
+	created.Status = cp.Status
+
+	return created, nil
 }
 
 // GetContactPointByID retrieves an active contact point by its UUID string.
@@ -157,9 +132,8 @@ func (d *DB) DeleteContactPoint(ctx context.Context, idStr string) error {
 
 // UpdateContactPoint updates fields of an existing active contact point.
 func (d *DB) UpdateContactPoint(ctx context.Context, cp models.ContactPoint) error {
-	// Ensure ID is valid
-	idUUID := uuid.UUID(cp.ID)
-	if idUUID == uuid.Nil {
+	id := uuid.UUID(cp.ID)
+	if id == uuid.Nil {
 		return fmt.Errorf("invalid contact point ID")
 	}
 
@@ -171,14 +145,15 @@ func (d *DB) UpdateContactPoint(ctx context.Context, cp models.ContactPoint) err
 	    configuration = $4,
 	    status = $5,
 	    updated_at = NOW()
-	WHERE id = $6 AND status = 'active'`
+	WHERE id = $6`
+
 	_, err := d.Conn.Exec(ctx, query,
 		cp.Name,
 		cp.UserID,
 		cp.Type,
-		cp.Configuration,
+		cp.Configuration, // Directly bind the map as JSONB
 		cp.Status,
-		idUUID,
+		id,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to update contact point: %w", err)

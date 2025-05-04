@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS notifications (
     recipient_id BIGINT NOT NULL,
     request_id UUID NOT NULL,
     error TEXT,
+    silenced INT DEFAULT 0,
 
     -- Alert context fields
     station_id INT,

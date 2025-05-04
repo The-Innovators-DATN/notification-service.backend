@@ -12,6 +12,7 @@ type Task struct {
 	TypeMessage string    // Current type of the alert (e.g., "alert", "resolved")
 	Topic       string    // Source or category of the alert (e.g., Kafka topic)
 	Timestamp   time.Time // When the alert event occurred
+	Silenced    int
 
 	// Contextual metric data
 	StationID    int     // ID of related station or device

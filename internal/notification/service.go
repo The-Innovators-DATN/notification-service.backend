@@ -138,6 +138,7 @@ func (s *Service) handleTask(task models.Task) {
 			Status:               "pending", // initial status
 			RecipientID:          task.RecipientID,
 			RequestID:            reqID,
+			Silenced:             task.Silenced,
 			Context: models.AlertContext{
 				StationID:    task.StationID,
 				MetricID:     task.MetricID,
@@ -156,19 +157,24 @@ func (s *Service) handleTask(task models.Task) {
 			continue
 		}
 
-		// dispatch via provider
-		provider := s.providerFuncs[pol.ContactPoint.Type]
-		err = provider(s.ctx, notif, *pol.ContactPoint)
+		if notif.Silenced == 0 {
+			// Dispatch via provider only if not silenced
+			provider := s.providerFuncs[pol.ContactPoint.Type]
+			err = provider(s.ctx, notif, *pol.ContactPoint)
 
-		// finalize status
-		final := "success"
-		if err != nil {
-			final = "failed"
-			s.logger.Errorf("Dispatch error via %s: %v", pol.ContactPoint.Type, err)
+			// finalize status
+			final := "success"
+			if err != nil {
+				final = "failed"
+				s.logger.Errorf("Dispatch error via %s: %v", pol.ContactPoint.Type, err)
+			}
+			_ = s.db.UpdateNotificationStatus(s.ctx, task.RequestID, final, fmt.Sprintf("%v", err))
+			s.logger.Infof("Policy %s dispatched %s via %s", uuid.UUID(pol.ID).String(), final, pol.ContactPoint.Type)
+		} else {
+			// Silenced (Silenced == 1), update status to "silenced"
+			_ = s.db.UpdateNotificationStatus(s.ctx, task.RequestID, "silenced", "Notification silenced, no dispatch")
+			s.logger.Infof("Policy %s notification silenced (no dispatch), saved to DB", uuid.UUID(pol.ID).String())
 		}
-		_ = s.db.UpdateNotificationStatus(s.ctx, task.RequestID, final, fmt.Sprintf("%v", err))
-
-		s.logger.Infof("Policy %s dispatched %s via %s", uuid.UUID(pol.ID).String(), final, pol.ContactPoint.Type)
 	}
 }
 

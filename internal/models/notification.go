@@ -27,11 +27,12 @@ type Notification struct {
 	Subject              string        `json:"subject"`
 	Body                 string        `json:"body"`
 	NotificationPolicyID [16]byte      `json:"notification_policy_id"`
+	Silenced             int           `json:"silenced"`
 	Status               string        `json:"status"`
 	DeliveryMethod       string        `json:"delivery_method"`
 	RecipientID          int64         `json:"recipient_id"`
 	RequestID            [16]byte      `json:"request_id"`
-	Error                string        `json:"error"`
+	Error                string        `json:"error,omitempty"`
 	Context              AlertContext  `json:"context,omitempty"`
 	Policy               *Policy       `json:"policy,omitempty"`        // Added for response, not stored in DB
 	ContactPoint         *ContactPoint `json:"contact_point,omitempty"` // Added for response, not stored in DB

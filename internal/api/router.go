@@ -20,7 +20,7 @@ func NewRouter(logger *logging.Logger, cfg config.Config, handler *Handler) *gin
 	// Contact-Points routes
 	cp := rApi.Group("/contact-points")
 	{
-		cp.POST("", handlerWrapper(logger, func(c *gin.Context) {
+		cp.POST("/create", handlerWrapper(logger, func(c *gin.Context) {
 			h := ctxHandler(c)
 			h.CreateContactPoint(c)
 		}))
@@ -45,7 +45,7 @@ func NewRouter(logger *logging.Logger, cfg config.Config, handler *Handler) *gin
 	// Policies routes
 	pol := rApi.Group("/policies")
 	{
-		pol.POST("", handlerWrapper(logger, func(c *gin.Context) {
+		pol.POST("create", handlerWrapper(logger, func(c *gin.Context) {
 			h := ctxHandler(c)
 			h.CreatePolicy(c)
 		}))

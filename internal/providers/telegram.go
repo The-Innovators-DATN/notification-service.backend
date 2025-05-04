@@ -19,7 +19,11 @@ type telegramConfig struct {
 func SendTelegram(ctx context.Context, notif models.Notification, cp models.ContactPoint) error {
 	// Parse configuration from ContactPoint.Configuration
 	var cfg telegramConfig
-	if err := json.Unmarshal([]byte(cp.Configuration), &cfg); err != nil {
+	configBytes, err := json.Marshal(cp.Configuration) // Convert map to JSON bytes
+	if err != nil {
+		return fmt.Errorf("failed to marshal configuration for contact point %s: %w", cp.ID, err)
+	}
+	if err := json.Unmarshal(configBytes, &cfg); err != nil {
 		return fmt.Errorf("invalid Telegram configuration for contact point %s: %w", cp.ID, err)
 	}
 	if cfg.BotToken == "" {

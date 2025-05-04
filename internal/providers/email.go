@@ -52,7 +52,11 @@ const emailTemplate = `Subject: {{ .Subject }}
 func SendEmail(ctx context.Context, notification models.Notification, cp models.ContactPoint, cfg config.Config) error {
 	// Parse recipient email from ContactPoint configuration
 	var ec emailConfig
-	if err := json.Unmarshal([]byte(cp.Configuration), &ec); err != nil {
+	configBytes, err := json.Marshal(cp.Configuration) // Convert map to JSON bytes
+	if err != nil {
+		return fmt.Errorf("failed to marshal configuration for user %d: %w", notification.RecipientID, err)
+	}
+	if err := json.Unmarshal(configBytes, &ec); err != nil {
 		return fmt.Errorf("invalid email configuration for user %d: %w", notification.RecipientID, err)
 	}
 	if ec.Email == "" {

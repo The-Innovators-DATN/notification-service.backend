@@ -9,46 +9,41 @@ import (
 )
 
 // CreatePolicy inserts or updates a notification policy record.
-func (d *DB) CreatePolicy(ctx context.Context, p models.Policy) error {
+func (d *DB) CreatePolicy(ctx context.Context, p models.Policy) (models.Policy, error) {
 	// Ensure ID is set
 	if p.ID == [16]byte{} {
 		newID := uuid.New()
 		copy(p.ID[:], newID[:])
 	}
-	// Validate contact point ID
-	if p.ContactPointID == [16]byte{} {
-		return fmt.Errorf("contact point ID cannot be empty")
-	}
 
-	// Bind UUIDs
-	policyID := uuid.UUID(p.ID)
-	contactID := uuid.UUID(p.ContactPointID)
+	var createdPolicy models.Policy
 
 	query := `
 	INSERT INTO notification_policy (
 		id, contact_point_id, severity, status, action, condition_type, created_at, updated_at
 	)
 	VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
-	ON CONFLICT (id) DO UPDATE
-	SET contact_point_id = EXCLUDED.contact_point_id,
-	    severity         = EXCLUDED.severity,
-	    status           = EXCLUDED.status,
-	    action           = EXCLUDED.action,
-	    condition_type   = EXCLUDED.condition_type,
-	    updated_at       = NOW()`
+	RETURNING id, created_at, updated_at
+	`
 
-	_, err := d.Conn.Exec(ctx, query,
-		policyID,
-		contactID,
+	err := d.Conn.QueryRow(ctx, query,
+		uuid.UUID(p.ID),
+		uuid.UUID(p.ContactPointID),
 		p.Severity,
 		p.Status,
 		p.Action,
 		p.ConditionType,
-	)
+	).Scan(&createdPolicy.ID, &createdPolicy.CreatedAt, &createdPolicy.UpdatedAt)
 	if err != nil {
-		return fmt.Errorf("failed to create or update policy: %w", err)
+		return models.Policy{}, fmt.Errorf("failed to create or update policy: %w", err)
 	}
-	return nil
+	createdPolicy.ContactPointID = p.ContactPointID
+	createdPolicy.Severity = p.Severity
+	createdPolicy.Status = p.Status
+	createdPolicy.Action = p.Action
+	createdPolicy.ConditionType = p.ConditionType
+
+	return createdPolicy, nil
 }
 
 // GetPolicyByID retrieves an active policy and its contact point (if active).
@@ -71,9 +66,10 @@ func (d *DB) GetPolicyByID(ctx context.Context, idStr string) (models.Policy, er
 
 	var p models.Policy
 	var cpID sql.NullString
-	var cpName, cpType, cpConfig, cpStatus sql.NullString
+	var cpName, cpType, cpStatus sql.NullString
 	var cpUserID sql.NullInt64
 	var cpCreated, cpUpdated sql.NullTime
+	var cpConfig map[string]interface{}
 
 	err = row.Scan(
 		&p.ID,
@@ -105,7 +101,7 @@ func (d *DB) GetPolicyByID(ctx context.Context, idStr string) (models.Policy, er
 		cp.Name = cpName.String
 		cp.UserID = cpUserID.Int64
 		cp.Type = cpType.String
-		cp.Configuration = cpConfig.String
+		cp.Configuration = cpConfig
 		cp.Status = cpStatus.String
 		cp.CreatedAt = cpCreated.Time
 		cp.UpdatedAt = cpUpdated.Time
@@ -136,9 +132,10 @@ func (d *DB) GetPoliciesByUserID(ctx context.Context, userID int64) ([]models.Po
 	for rows.Next() {
 		var p models.Policy
 		var cpID sql.NullString
-		var cpName, cpType, cpConfig, cpStatus sql.NullString
+		var cpName, cpType, cpStatus sql.NullString
 		var cpUserID sql.NullInt64
 		var cpCreated, cpUpdated sql.NullTime
+		var cpConfig map[string]interface{}
 
 		err := rows.Scan(
 			&p.ID,
@@ -169,7 +166,7 @@ func (d *DB) GetPoliciesByUserID(ctx context.Context, userID int64) ([]models.Po
 			cp.Name = cpName.String
 			cp.UserID = cpUserID.Int64
 			cp.Type = cpType.String
-			cp.Configuration = cpConfig.String
+			cp.Configuration = cpConfig
 			cp.Status = cpStatus.String
 			cp.CreatedAt = cpCreated.Time
 			cp.UpdatedAt = cpUpdated.Time

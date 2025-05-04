@@ -22,7 +22,7 @@ func (d *DB) CreateNotification(ctx context.Context, n models.Notification) erro
 	INSERT INTO notifications (
 		id, created_at, type, subject, body,
 		notification_policy_id, status, delivery_method,
-		recipient_id, request_id, error,
+		recipient_id, request_id, error, silenced,
 		station_id, metric_id, metric_name, operator,
 		threshold, threshold_min, threshold_max, value,
 		updated_at
@@ -41,6 +41,7 @@ func (d *DB) CreateNotification(ctx context.Context, n models.Notification) erro
 		n.RecipientID,
 		reqID,
 		n.Error,
+		n.Silenced,
 		n.Context.StationID,
 		n.Context.MetricID,
 		n.Context.MetricName,
@@ -101,7 +102,7 @@ func (d *DB) GetNotificationsByUserID(ctx context.Context, userID, limit, offset
 	SELECT
 		n.id, n.created_at, n.updated_at, n.type, n.subject, n.body,
 		n.notification_policy_id, n.status, n.delivery_method,
-		n.recipient_id, n.request_id, n.error,
+		n.recipient_id, n.request_id, n.error, n.silenced,
 		n.station_id, n.metric_id, n.metric_name, n.operator,
 		n.threshold, n.threshold_min, n.threshold_max, n.value,
 		p.id, p.severity, p.action, p.condition_type, p.contact_point_id,
@@ -137,7 +138,8 @@ func (d *DB) GetNotificationsByUserID(ctx context.Context, userID, limit, offset
 		var polSeverity sql.NullInt64
 		var polAction, polCond, polCPID sql.NullString
 		var cpID sql.NullString
-		var cpName, cpType, cpConfig sql.NullString
+		var cpName, cpType sql.NullString
+		var cpConfig map[string]interface{}
 
 		err = rows.Scan(
 			&n.ID, &n.CreatedAt, &n.UpdatedAt, &n.Type,
@@ -190,7 +192,7 @@ func (d *DB) GetNotificationsByUserID(ctx context.Context, userID, limit, offset
 				ID:            cpIDArr,
 				Name:          cpName.String,
 				Type:          cpType.String,
-				Configuration: cpConfig.String,
+				Configuration: cpConfig,
 			}
 		}
 
@@ -203,10 +205,10 @@ func (d *DB) GetNotificationsByUserID(ctx context.Context, userID, limit, offset
 // GetAllNotifications returns all notifications with nested Policy and ContactPoint, pagination.
 func (d *DB) GetAllNotifications(ctx context.Context, statusFilter string, limit, offset int) ([]models.Notification, int, error) {
 	// Count total
-	countQ := `SELECT COUNT(*) FROM notifications WHERE recipient_id = $1`
+	countQ := `SELECT COUNT(*) FROM notifications`
 	countArgs := []interface{}{}
 	if statusFilter != "all" {
-		countQ += " AND status = $2"
+		countQ += " AND status = $1"
 		countArgs = append(countArgs, statusFilter)
 	}
 
@@ -231,12 +233,12 @@ func (d *DB) GetAllNotifications(ctx context.Context, statusFilter string, limit
 
 	args := []interface{}{}
 	if statusFilter != "all" {
-		query += " AND n.status = $2"
+		query += " AND n.status = $1"
 		args = append(args, statusFilter)
-		query += " ORDER BY n.created_at DESC LIMIT $3 OFFSET $4"
+		query += " ORDER BY n.created_at DESC LIMIT $2 OFFSET $3"
 		args = append(args, limit, offset)
 	} else {
-		query += " ORDER BY n.created_at DESC LIMIT $2 OFFSET $3"
+		query += " ORDER BY n.created_at DESC LIMIT $1 OFFSET $2"
 		args = append(args, limit, offset)
 	}
 
@@ -255,7 +257,8 @@ func (d *DB) GetAllNotifications(ctx context.Context, statusFilter string, limit
 		var polSeverity sql.NullInt64
 		var polAction, polCond, polCPID sql.NullString
 		var cpID sql.NullString
-		var cpName, cpType, cpConfig sql.NullString
+		var cpName, cpType sql.NullString
+		var cpConfig map[string]interface{}
 
 		err = rows.Scan(
 			&n.ID, &n.CreatedAt, &n.UpdatedAt, &n.Type,
@@ -308,7 +311,7 @@ func (d *DB) GetAllNotifications(ctx context.Context, statusFilter string, limit
 				ID:            cpIDArr,
 				Name:          cpName.String,
 				Type:          cpType.String,
-				Configuration: cpConfig.String,
+				Configuration: cpConfig,
 			}
 		}
 
