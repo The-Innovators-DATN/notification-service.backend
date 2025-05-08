@@ -18,7 +18,7 @@ type AlertNotification struct {
 	AlertID      string    `json:"alert_id"`
 	AlertName    string    `json:"alert_name"`
 	StationID    int       `json:"station_id"`
-	UserID       int64     `json:"user_id"`
+	UserID       int       `json:"user_id"`
 	Message      string    `json:"message"`
 	Severity     int       `json:"severity"`
 	Timestamp    time.Time `json:"timestamp"`
@@ -110,7 +110,7 @@ func (c *Consumer) consumeNext() error {
 	defer func() {
 		c.logger.Debugf("consumeNext took %v", time.Since(start))
 	}()
-	
+
 	t1 := time.Now()
 	msg, err := c.reader.FetchMessage(c.ctx)
 	if err != nil {

@@ -6,7 +6,7 @@ import (
 	"notification-service/internal/logging"
 )
 
-// NewRouter configures routes and middleware for the notification service API.
+// NewRouter configures routes and middleware for the services service API.
 func NewRouter(logger *logging.Logger, cfg config.Config, handler *Handler) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery(), RequestLoggingMiddleware(logger))
@@ -80,13 +80,17 @@ func NewRouter(logger *logging.Logger, cfg config.Config, handler *Handler) *gin
 		}))
 	}
 
+	// WebSocket route for real-time notifications
+	rApi.GET("/ws", handlerWrapper(logger, func(c *gin.Context) {
+		h := ctxHandler(c)
+		h.WebSocketHandler(c)
+	}))
+
 	return r
 }
 
 // ctxHandler extracts Handler instance from context
 func ctxHandler(c *gin.Context) *Handler {
-	// assume Handler was injected into context earlier if needed
-	// or simply use closure-bound Handler in wrapper
 	return c.MustGet("handler").(*Handler)
 }
 

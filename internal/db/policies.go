@@ -8,7 +8,7 @@ import (
 	"notification-service/internal/models"
 )
 
-// CreatePolicy inserts or updates a notification policy record.
+// CreatePolicy inserts or updates a services policy record.
 func (d *DB) CreatePolicy(ctx context.Context, p models.Policy) (models.Policy, error) {
 	// Ensure ID is set
 	if p.ID == [16]byte{} {
@@ -26,7 +26,7 @@ func (d *DB) CreatePolicy(ctx context.Context, p models.Policy) (models.Policy, 
 	RETURNING id, created_at, updated_at
 	`
 
-	err := d.Conn.QueryRow(ctx, query,
+	err := d.Pool.QueryRow(ctx, query,
 		uuid.UUID(p.ID),
 		uuid.UUID(p.ContactPointID),
 		p.Severity,
@@ -62,7 +62,7 @@ func (d *DB) GetPolicyByID(ctx context.Context, idStr string) (models.Policy, er
 	  ON p.contact_point_id = cp.id AND cp.status = 'active'
 	WHERE p.id = $1 AND p.status = 'active'`
 
-	row := d.Conn.QueryRow(ctx, query, id)
+	row := d.Pool.QueryRow(ctx, query, id)
 
 	var p models.Policy
 	var cpID sql.NullString
@@ -99,7 +99,7 @@ func (d *DB) GetPolicyByID(ctx context.Context, idStr string) (models.Policy, er
 		var cp models.ContactPoint
 		copy(cp.ID[:], uid[:])
 		cp.Name = cpName.String
-		cp.UserID = cpUserID.Int64
+		cp.UserID = int(cpUserID.Int64)
 		cp.Type = cpType.String
 		cp.Configuration = cpConfig
 		cp.Status = cpStatus.String
@@ -112,7 +112,7 @@ func (d *DB) GetPolicyByID(ctx context.Context, idStr string) (models.Policy, er
 }
 
 // GetPoliciesByUserID returns all active policies (and their contact points) for a user.
-func (d *DB) GetPoliciesByUserID(ctx context.Context, userID int64) ([]models.Policy, error) {
+func (d *DB) GetPoliciesByUserID(ctx context.Context, userID int) ([]models.Policy, error) {
 	query := `
 	SELECT
 		np.id, np.contact_point_id, np.severity, np.status, np.action, np.condition_type, np.created_at, np.updated_at,
@@ -122,7 +122,7 @@ func (d *DB) GetPoliciesByUserID(ctx context.Context, userID int64) ([]models.Po
 	  ON np.contact_point_id = cp.id AND cp.user_id = $1 AND cp.status = 'active'
 	WHERE np.status = 'active'`
 
-	rows, err := d.Conn.Query(ctx, query, userID)
+	rows, err := d.Pool.Query(ctx, query, userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get policies by user_id %d: %w", userID, err)
 	}
@@ -164,7 +164,7 @@ func (d *DB) GetPoliciesByUserID(ctx context.Context, userID int64) ([]models.Po
 			var cp models.ContactPoint
 			copy(cp.ID[:], uid[:])
 			cp.Name = cpName.String
-			cp.UserID = cpUserID.Int64
+			cp.UserID = int(cpUserID.Int64)
 			cp.Type = cpType.String
 			cp.Configuration = cpConfig
 			cp.Status = cpStatus.String
@@ -190,7 +190,7 @@ func (d *DB) DeletePolicy(ctx context.Context, idStr string) error {
 	UPDATE notification_policy
 	SET status = 'inactive', updated_at = NOW()
 	WHERE id = $1`
-	_, err = d.Conn.Exec(ctx, query, id)
+	_, err = d.Pool.Exec(ctx, query, id)
 	if err != nil {
 		return fmt.Errorf("failed to delete policy: %w", err)
 	}
@@ -215,7 +215,7 @@ func (d *DB) UpdatePolicy(ctx context.Context, p models.Policy) error {
 	    updated_at = NOW()
 	WHERE id = $6 AND status = 'active'`
 
-	_, err := d.Conn.Exec(ctx, query,
+	_, err := d.Pool.Exec(ctx, query,
 		contactID,
 		p.Severity,
 		p.Status,

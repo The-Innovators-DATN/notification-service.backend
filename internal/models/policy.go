@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// Policy represents a notification policy with associated contact point.
+// Policy represents a services policy with associated contact point.
 type Policy struct {
 	ID             [16]byte      `json:"id"`
 	ContactPointID [16]byte      `json:"contact_point_id"`

@@ -3,12 +3,15 @@ package api
 import (
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 	"notification-service/internal/db"
 	"notification-service/internal/logging"
 	"notification-service/internal/models"
+	"notification-service/internal/services"
 )
 
 type StandardResponse struct {
@@ -26,11 +29,60 @@ type PaginatedResponse struct {
 type Handler struct {
 	db     *db.DB
 	logger *logging.Logger
+	svc    *services.Service
 }
 
 // NewHandler constructs a new API handler
-func NewHandler(db *db.DB, logger *logging.Logger) *Handler {
-	return &Handler{db: db, logger: logger}
+func NewHandler(db *db.DB, logger *logging.Logger, svc *services.Service) *Handler {
+	return &Handler{db: db, logger: logger, svc: svc}
+}
+
+// WebSocketHandler handles WebSocket connections with ping-pong mechanism
+func (h *Handler) WebSocketHandler(c *gin.Context) {
+	userIDStr, exists := c.Get("user_id")
+	if !exists {
+		h.logger.Errorf("user_id not found in context")
+		c.JSON(http.StatusUnauthorized, StandardResponse{false, "unauthorized", nil})
+		return
+	}
+	userID, err := strconv.Atoi(userIDStr.(string))
+	if err != nil {
+		h.logger.Errorf("invalid user_id: %v", err)
+		c.JSON(http.StatusBadRequest, StandardResponse{false, "invalid user_id", nil})
+		return
+	}
+
+	var upgrader = websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+		CheckOrigin:     func(r *http.Request) bool { return true },
+	}
+
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		h.logger.Errorf("WebSocket upgrade failed: %v", err)
+		c.JSON(http.StatusInternalServerError, StandardResponse{false, "failed to upgrade to WebSocket", nil})
+		return
+	}
+
+	h.svc.AddWebSocketConnection(userID, conn)
+	defer h.svc.RemoveWebSocketConnection(userID, conn)
+
+	// Ping-pong mechanism
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if err := conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(10*time.Second)); err != nil {
+				h.logger.Errorf("Ping failed for user %d: %v", userID, err)
+				return
+			}
+		case <-c.Done():
+			return
+		}
+	}
 }
 
 // CreateContactPoint creates and returns a new contact point
@@ -42,13 +94,12 @@ func (h *Handler) CreateContactPoint(c *gin.Context) {
 		return
 	}
 
-	// Map input to ContactPoint model
 	contactPoint := models.ContactPoint{
 		Name:          input.Name,
 		UserID:        input.UserID,
 		Type:          input.Type,
-		Configuration: input.Configuration, // Directly use the map, no string conversion needed
-		Status:        "active",            // Default status
+		Configuration: input.Configuration,
+		Status:        "active",
 	}
 
 	created, err := h.db.CreateContactPoint(c.Request.Context(), contactPoint)
@@ -119,7 +170,6 @@ func (h *Handler) UpdateContactPoint(c *gin.Context) {
 		return
 	}
 
-	// Parse and validate the ID from the path
 	parsedPathID, err := uuid.Parse(id)
 	if err != nil {
 		h.logger.Errorf("invalid contact point ID %s: %v", id, err)
@@ -127,7 +177,6 @@ func (h *Handler) UpdateContactPoint(c *gin.Context) {
 		return
 	}
 
-	// Parse the ID from the input
 	parsedInputID, err := uuid.Parse(input.ID)
 	if err != nil {
 		h.logger.Errorf("invalid input ID %s: %v", input.ID, err)
@@ -135,14 +184,12 @@ func (h *Handler) UpdateContactPoint(c *gin.Context) {
 		return
 	}
 
-	// Ensure the ID in the path matches the ID in the input
 	if parsedPathID != parsedInputID {
 		h.logger.Errorf("path ID %s does not match input ID %s", id, input.ID)
 		c.JSON(http.StatusBadRequest, StandardResponse{false, "path ID does not match input ID", nil})
 		return
 	}
 
-	// Fetch the existing contact point to preserve unchanged fields
 	existing, err := h.db.GetContactPointByID(c.Request.Context(), id)
 	if err != nil {
 		h.logger.Errorf("contact point %s not found: %v", id, err)
@@ -150,7 +197,6 @@ func (h *Handler) UpdateContactPoint(c *gin.Context) {
 		return
 	}
 
-	// Map input to ContactPoint model, preserving existing values if not provided
 	contactPoint := models.ContactPoint{
 		ID:            existing.ID,
 		Name:          existing.Name,
@@ -162,7 +208,6 @@ func (h *Handler) UpdateContactPoint(c *gin.Context) {
 		UpdatedAt:     existing.UpdatedAt,
 	}
 
-	// Update fields if provided
 	if input.Name != "" {
 		contactPoint.Name = input.Name
 	}
@@ -173,13 +218,12 @@ func (h *Handler) UpdateContactPoint(c *gin.Context) {
 		contactPoint.Type = input.Type
 	}
 	if input.Configuration != nil {
-		contactPoint.Configuration = input.Configuration // Directly assign the map
+		contactPoint.Configuration = input.Configuration
 	}
 	if input.Status != "" {
 		contactPoint.Status = input.Status
 	}
 
-	// Ensure the ID is set correctly
 	copy(contactPoint.ID[:], parsedPathID[:])
 
 	if err := h.db.UpdateContactPoint(c.Request.Context(), contactPoint); err != nil {
@@ -208,7 +252,6 @@ func (h *Handler) CreatePolicy(c *gin.Context) {
 		return
 	}
 
-	// Parse ContactPointID
 	parsedContactPointID, err := uuid.Parse(input.ContactPointID)
 	if err != nil {
 		h.logger.Errorf("invalid contact point ID %s: %v", input.ContactPointID, err)
@@ -216,7 +259,6 @@ func (h *Handler) CreatePolicy(c *gin.Context) {
 		return
 	}
 
-	// Map input to Policy model
 	policy := models.Policy{
 		ContactPointID: parsedContactPointID,
 		Severity:       input.Severity,
@@ -225,7 +267,6 @@ func (h *Handler) CreatePolicy(c *gin.Context) {
 		ConditionType:  input.ConditionType,
 	}
 
-	// Let DB handle ID generation
 	policy, err = h.db.CreatePolicy(c.Request.Context(), policy)
 	if err != nil {
 		h.logger.Errorf("failed to create policy: %v", err)
@@ -233,7 +274,6 @@ func (h *Handler) CreatePolicy(c *gin.Context) {
 		return
 	}
 
-	// Fetch the created policy
 	createdPolicy, err := h.db.GetPolicyByID(c.Request.Context(), uuid.UUID(policy.ID).String())
 	if err != nil {
 		h.logger.Errorf("policy created but fetch failed: %v", err)
@@ -261,21 +301,21 @@ func (h *Handler) GetPolicy(c *gin.Context) {
 
 // GetPoliciesByUserID lists active policies for a user
 func (h *Handler) GetPoliciesByUserID(c *gin.Context) {
-	uid, err := strconv.ParseInt(c.Param("user_id"), 10, 64)
+	userId, err := strconv.ParseInt(c.Param("user_id"), 10, 32)
 	if err != nil {
 		h.logger.Errorf("invalid user_id %s: %v", c.Param("user_id"), err)
 		c.JSON(http.StatusBadRequest, StandardResponse{false, "invalid user_id", nil})
 		return
 	}
 
-	list, err := h.db.GetPoliciesByUserID(c.Request.Context(), uid)
+	list, err := h.db.GetPoliciesByUserID(c.Request.Context(), int(userId))
 	if err != nil {
-		h.logger.Errorf("could not list policies for user %d: %v", uid, err)
+		h.logger.Errorf("could not list policies for user %d: %v", userId, err)
 		c.JSON(http.StatusInternalServerError, StandardResponse{false, "failed to fetch policies", nil})
 		return
 	}
 
-	h.logger.Infof("listed %d policies for user %d", len(list), uid)
+	h.logger.Infof("listed %d policies for user %d", len(list), userId)
 	c.JSON(http.StatusOK, StandardResponse{true, "policies list", list})
 }
 
@@ -302,7 +342,6 @@ func (h *Handler) UpdatePolicy(c *gin.Context) {
 		return
 	}
 
-	// Parse and validate the ID from the path
 	parsedPathID, err := uuid.Parse(id)
 	if err != nil {
 		h.logger.Errorf("invalid policy ID %s: %v", id, err)
@@ -310,7 +349,6 @@ func (h *Handler) UpdatePolicy(c *gin.Context) {
 		return
 	}
 
-	// Parse the ID from the input
 	parsedInputID, err := uuid.Parse(input.ID)
 	if err != nil {
 		h.logger.Errorf("invalid input ID %s: %v", input.ID, err)
@@ -318,14 +356,12 @@ func (h *Handler) UpdatePolicy(c *gin.Context) {
 		return
 	}
 
-	// Ensure the ID in the path matches the ID in the input
 	if parsedPathID != parsedInputID {
 		h.logger.Errorf("path ID %s does not match input ID %s", id, input.ID)
 		c.JSON(http.StatusBadRequest, StandardResponse{false, "path ID does not match input ID", nil})
 		return
 	}
 
-	// Parse ContactPointID
 	parsedContactPointID, err := uuid.Parse(input.ContactPointID)
 	if err != nil {
 		h.logger.Errorf("invalid contact point ID %s: %v", input.ContactPointID, err)
@@ -333,7 +369,6 @@ func (h *Handler) UpdatePolicy(c *gin.Context) {
 		return
 	}
 
-	// Fetch the existing policy to preserve unchanged fields
 	existing, err := h.db.GetPolicyByID(c.Request.Context(), id)
 	if err != nil {
 		h.logger.Errorf("policy %s not found: %v", id, err)
@@ -341,7 +376,6 @@ func (h *Handler) UpdatePolicy(c *gin.Context) {
 		return
 	}
 
-	// Map input to Policy model, preserving existing values if not provided
 	policy := models.Policy{
 		ID:             existing.ID,
 		ContactPointID: parsedContactPointID,
@@ -353,7 +387,6 @@ func (h *Handler) UpdatePolicy(c *gin.Context) {
 		UpdatedAt:      existing.UpdatedAt,
 	}
 
-	// Update fields if provided
 	if input.Severity != 0 {
 		policy.Severity = input.Severity
 	}
@@ -367,7 +400,6 @@ func (h *Handler) UpdatePolicy(c *gin.Context) {
 		policy.ConditionType = input.ConditionType
 	}
 
-	// Ensure the ID is set correctly
 	copy(policy.ID[:], parsedPathID[:])
 
 	if err := h.db.UpdatePolicy(c.Request.Context(), policy); err != nil {

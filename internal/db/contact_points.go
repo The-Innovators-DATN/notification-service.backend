@@ -23,7 +23,7 @@ func (d *DB) CreateContactPoint(ctx context.Context, cp models.ContactPoint) (mo
 	RETURNING id, created_at, updated_at`
 
 	var created models.ContactPoint
-	err := d.Conn.QueryRow(ctx, query,
+	err := d.Pool.QueryRow(ctx, query,
 		uuid.UUID(cp.ID),
 		cp.Name,
 		cp.UserID,
@@ -58,7 +58,7 @@ func (d *DB) GetContactPointByID(ctx context.Context, idStr string) (models.Cont
 
 	var cp models.ContactPoint
 	var returnedID uuid.UUID
-	err = d.Conn.QueryRow(ctx, query, idUUID).Scan(
+	err = d.Pool.QueryRow(ctx, query, idUUID).Scan(
 		&returnedID,
 		&cp.Name,
 		&cp.UserID,
@@ -82,7 +82,7 @@ func (d *DB) GetContactPointsByUserID(ctx context.Context, userID int64) ([]mode
 	FROM contact_points
 	WHERE user_id = $1 AND status = 'active'`
 
-	rows, err := d.Conn.Query(ctx, query, userID)
+	rows, err := d.Pool.Query(ctx, query, userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get contact points by user_id %d: %w", userID, err)
 	}
@@ -123,7 +123,7 @@ func (d *DB) DeleteContactPoint(ctx context.Context, idStr string) error {
 	UPDATE contact_points
 	SET status = 'deleted', updated_at = NOW()
 	WHERE id = $1`
-	_, err = d.Conn.Exec(ctx, query, idUUID)
+	_, err = d.Pool.Exec(ctx, query, idUUID)
 	if err != nil {
 		return fmt.Errorf("failed to delete contact point: %w", err)
 	}
@@ -147,7 +147,7 @@ func (d *DB) UpdateContactPoint(ctx context.Context, cp models.ContactPoint) err
 	    updated_at = NOW()
 	WHERE id = $6`
 
-	_, err := d.Conn.Exec(ctx, query,
+	_, err := d.Pool.Exec(ctx, query,
 		cp.Name,
 		cp.UserID,
 		cp.Type,

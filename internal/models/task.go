@@ -2,12 +2,12 @@ package models
 
 import "time"
 
-// Task represents an alert or notification request enqueued for processing.
+// Task represents an alert or services request enqueued for processing.
 type Task struct {
 	RequestID   string    // Unique identifier of the alert
 	Subject     string    // Title or summary of the alert
 	Body        string    // Detailed message content
-	RecipientID int64     // User ID to notify
+	RecipientID int       // User ID to notify
 	Severity    int       // Alert severity level
 	TypeMessage string    // Current type of the alert (e.g., "alert", "resolved")
 	Topic       string    // Source or category of the alert (e.g., Kafka topic)

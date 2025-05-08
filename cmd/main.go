@@ -7,7 +7,7 @@ import (
 	"notification-service/internal/db"
 	"notification-service/internal/kafka"
 	"notification-service/internal/logging"
-	"notification-service/internal/notification"
+	"notification-service/internal/services"
 	"os"
 	"os/signal"
 	"sync"
@@ -21,12 +21,11 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Initialize logger                     S
+	// Initialize logger
 	logger, err := logging.New(cfg.Logging.Dir, cfg.Logging.Level)
 	if err != nil {
 		log.Fatalf("Failed to init logger: %v", err)
 	}
-	// Lưu ý: Xóa defer logger.Close() vì *logging.Logger không có phương thức Close
 
 	// Connect to database
 	dbConn, err := db.New(cfg.DB.DSN)
@@ -34,10 +33,10 @@ func main() {
 		logger.Errorf("Failed to connect to database: %v", err)
 		log.Fatalf("Database connection failed: %v", err)
 	}
-	defer dbConn.Close() // Giả sử dbConn có phương thức Close
+	defer dbConn.Close()
 
 	// Initialize notification service
-	svc := notification.New(dbConn, logger, cfg)
+	svc := services.New(dbConn, logger, cfg)
 	var wg sync.WaitGroup
 	svc.Start(&wg)
 
@@ -46,7 +45,7 @@ func main() {
 	go consumer.Start(&wg)
 
 	// Start API server
-	handler := api.NewHandler(dbConn, logger)
+	handler := api.NewHandler(dbConn, logger, svc)
 	router := api.NewRouter(logger, cfg, handler)
 	go func() {
 		logger.Infof("Starting API server on :8080")
@@ -60,7 +59,7 @@ func main() {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	<-sigChan
 	logger.Infof("Shutting down service...")
-	consumer.Close() // Giả sử Consumer có phương thức Close
+	consumer.Close()
 	wg.Wait()
 	logger.Infof("Service stopped gracefully")
 }

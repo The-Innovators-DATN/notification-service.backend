@@ -4,24 +4,21 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type DB struct {
-	Conn *pgx.Conn
+	Pool *pgxpool.Pool
 }
 
 func New(dsn string) (*DB, error) {
-	conn, err := pgx.Connect(context.Background(), dsn)
+	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to database: %w", err)
+		return nil, fmt.Errorf("failed to create pool: %w", err)
 	}
-	return &DB{Conn: conn}, nil
+	return &DB{Pool: pool}, nil
 }
 
-func (d *DB) Close() error {
-	if err := d.Conn.Close(context.Background()); err != nil {
-		return fmt.Errorf("failed to close database connection: %w", err)
-	}
-	return nil
+func (d *DB) Close() {
+	d.Pool.Close()
 }

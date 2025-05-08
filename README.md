@@ -24,7 +24,7 @@ The Notification Service is a backend application designed to manage and send no
 ### Step 1: Clone the repository
 ```bash
 git clone <repository-url>
-cd notification-service
+cd services-service
 ```
 
 ### Step 2: Configure Environment Variables

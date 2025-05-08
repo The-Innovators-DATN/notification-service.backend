@@ -37,6 +37,11 @@ type Config struct {
 		Level string
 		Dir   string
 	}
+	RateLimit struct {
+		WebSocketRateLimiter int
+		EmailRateLimiter     int
+		TelegramRateLimiter  int
+	}
 }
 
 // Load reads environment variables, applies defaults, and returns a Config.
@@ -81,6 +86,17 @@ func Load() (Config, error) {
 		cfg.Notification.MaxWorkers = mw
 	}
 
+	// Rate limit settings
+	if ws, err := strconv.Atoi(os.Getenv("WEBSOCKET_RATE_LIMITER")); err == nil {
+		cfg.RateLimit.WebSocketRateLimiter = ws
+	}
+	if em, err := strconv.Atoi(os.Getenv("EMAIL_RATE_LIMITER")); err == nil {
+		cfg.RateLimit.EmailRateLimiter = em
+	}
+	if tg, err := strconv.Atoi(os.Getenv("TELEGRAM_RATE_LIMITER")); err == nil {
+		cfg.RateLimit.TelegramRateLimiter = tg
+	}
+
 	// Validate required settings
 	missing := []string{}
 	if cfg.Kafka.Broker == "" {
@@ -105,6 +121,15 @@ func Load() (Config, error) {
 	}
 	if cfg.Notification.MaxWorkers == 0 {
 		cfg.Notification.MaxWorkers = 10
+	}
+	if cfg.RateLimit.WebSocketRateLimiter == 0 {
+		cfg.RateLimit.WebSocketRateLimiter = 5
+	}
+	if cfg.RateLimit.EmailRateLimiter == 0 {
+		cfg.RateLimit.EmailRateLimiter = 2
+	}
+	if cfg.RateLimit.TelegramRateLimiter == 0 {
+		cfg.RateLimit.TelegramRateLimiter = 30
 	}
 
 	return cfg, nil

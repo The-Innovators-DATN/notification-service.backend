@@ -8,7 +8,7 @@ import (
 	"notification-service/internal/models"
 )
 
-// CreateNotification inserts a new notification record with nested AlertContext fields.
+// CreateNotification inserts a new services record with nested AlertContext fields.
 func (d *DB) CreateNotification(ctx context.Context, n models.Notification) error {
 	if n.ID == [16]byte{} {
 		newID := uuid.New()
@@ -29,7 +29,7 @@ func (d *DB) CreateNotification(ctx context.Context, n models.Notification) erro
 	)
 	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`
 
-	_, err := d.Conn.Exec(ctx, query,
+	_, err := d.Pool.Exec(ctx, query,
 		notifID,
 		n.CreatedAt,
 		n.Type,
@@ -53,7 +53,7 @@ func (d *DB) CreateNotification(ctx context.Context, n models.Notification) erro
 		n.UpdatedAt,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to create notification: %w", err)
+		return fmt.Errorf("failed to create services: %w", err)
 	}
 	return nil
 }
@@ -72,12 +72,12 @@ func (d *DB) UpdateNotificationStatus(ctx context.Context, requestID string, sta
 		updated_at = NOW()
 	WHERE request_id = $3`
 
-	res, err := d.Conn.Exec(ctx, query, status, errMsg, reqID)
+	res, err := d.Pool.Exec(ctx, query, status, errMsg, reqID)
 	if err != nil {
-		return fmt.Errorf("failed to update notification status: %w", err)
+		return fmt.Errorf("failed to update services status: %w", err)
 	}
 	if res.RowsAffected() == 0 {
-		return fmt.Errorf("no notification updated for request_id %s", requestID)
+		return fmt.Errorf("no services updated for request_id %s", requestID)
 	}
 	return nil
 }
@@ -93,7 +93,7 @@ func (d *DB) GetNotificationsByUserID(ctx context.Context, userID, limit, offset
 	}
 
 	var total int
-	if err := d.Conn.QueryRow(ctx, countQ, countArgs...).Scan(&total); err != nil {
+	if err := d.Pool.QueryRow(ctx, countQ, countArgs...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("failed to count notifications: %w", err)
 	}
 
@@ -123,7 +123,7 @@ func (d *DB) GetNotificationsByUserID(ctx context.Context, userID, limit, offset
 		args = append(args, limit, offset)
 	}
 
-	rows, err := d.Conn.Query(ctx, query, args...)
+	rows, err := d.Pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to get notifications: %w", err)
 	}
@@ -154,7 +154,7 @@ func (d *DB) GetNotificationsByUserID(ctx context.Context, userID, limit, offset
 			&cpID, &cpName, &cpType, &cpConfig,
 		)
 		if err != nil {
-			return nil, 0, fmt.Errorf("failed to scan notification: %w", err)
+			return nil, 0, fmt.Errorf("failed to scan services: %w", err)
 		}
 
 		if errText.Valid {
@@ -213,7 +213,7 @@ func (d *DB) GetAllNotifications(ctx context.Context, statusFilter string, limit
 	}
 
 	var total int
-	if err := d.Conn.QueryRow(ctx, countQ, countArgs...).Scan(&total); err != nil {
+	if err := d.Pool.QueryRow(ctx, countQ, countArgs...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("failed to count notifications: %w", err)
 	}
 
@@ -242,7 +242,7 @@ func (d *DB) GetAllNotifications(ctx context.Context, statusFilter string, limit
 		args = append(args, limit, offset)
 	}
 
-	rows, err := d.Conn.Query(ctx, query, args...)
+	rows, err := d.Pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to get notifications: %w", err)
 	}
@@ -273,7 +273,7 @@ func (d *DB) GetAllNotifications(ctx context.Context, statusFilter string, limit
 			&cpID, &cpName, &cpType, &cpConfig,
 		)
 		if err != nil {
-			return nil, 0, fmt.Errorf("failed to scan notification: %w", err)
+			return nil, 0, fmt.Errorf("failed to scan services: %w", err)
 		}
 
 		if errText.Valid {

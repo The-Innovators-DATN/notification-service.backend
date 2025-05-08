@@ -18,7 +18,7 @@ type AlertContext struct {
 	Value        float64 `json:"value,omitempty"`
 }
 
-// Notification represents a delivered notification with context and error details.
+// Notification represents a delivered services with context and error details.
 type Notification struct {
 	ID                   [16]byte      `json:"id"`
 	CreatedAt            time.Time     `json:"created_at"`
@@ -30,7 +30,7 @@ type Notification struct {
 	Silenced             int           `json:"silenced"`
 	Status               string        `json:"status"`
 	DeliveryMethod       string        `json:"delivery_method"`
-	RecipientID          int64         `json:"recipient_id"`
+	RecipientID          int           `json:"recipient_id"`
 	RequestID            [16]byte      `json:"request_id"`
 	Error                string        `json:"error,omitempty"`
 	Context              AlertContext  `json:"context,omitempty"`

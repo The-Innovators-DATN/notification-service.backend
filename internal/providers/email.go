@@ -7,9 +7,13 @@ import (
 	"fmt"
 	"net/smtp"
 	"text/template"
+	"time"
 
+	"golang.org/x/time/rate"
 	"notification-service/internal/config"
+	"notification-service/internal/logging"
 	"notification-service/internal/models"
+	"notification-service/internal/utils"
 )
 
 // emailConfig holds recipient email address parsed from ContactPoint.Configuration.
@@ -19,40 +23,44 @@ type emailConfig struct {
 
 // emailTemplate defines the structure of the email body with optional context fields.
 const emailTemplate = `Subject: {{ .Subject }}
-` +
-	`From: {{ .FromName }} <{{ .Username }}>
-` +
-	`To: {{ .To }}
-` +
-	`MIME-Version: 1.0
-` +
-	`Content-Type: text/plain; charset="utf-8"
-` +
-	`
-` +
-	`Alert Details:
-` +
-	`- Station ID: {{ .Context.StationID }}
-` +
-	`- Metric: {{ .Context.MetricName }} (ID {{ .Context.MetricID }})
-` +
-	`- Operator: {{ .Context.Operator }}
-` +
-	`- Threshold: {{ .Context.ThresholdMin }} - {{ .Context.ThresholdMax }} (target {{ .Context.Threshold }})
-` +
-	`- Value: {{ .Context.Value }}
-` +
-	`
-` +
-	`Message:
-` +
-	`{{ .Body }}`
+From: {{ .FromName }} <{{ .Username }}>
+To: {{ .To }}
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+
+Alert Details:
+- Station ID: {{ .Context.StationID }}
+- Metric: {{ .Context.MetricName }} (ID {{ .Context.MetricID }})
+- Operator: {{ .Context.Operator }}
+- Threshold: {{ .Context.ThresholdMin }} - {{ .Context.ThresholdMax }} (target {{ .Context.Threshold }})
+- Value: {{ .Context.Value }}
+
+Message:
+{{ .Body }}`
+
+// emailLimiter is the global rate limiter for email sending
+var emailLimiter *rate.Limiter
+
+// initEmailLimiter initializes the email rate limiter
+func initEmailLimiter(ratePerSecond int) {
+	emailLimiter = rate.NewLimiter(rate.Limit(float64(ratePerSecond)), ratePerSecond)
+}
 
 // SendEmail sends an alert email using SMTP, populating recipient from ContactPoint configuration.
-func SendEmail(ctx context.Context, notification models.Notification, cp models.ContactPoint, cfg config.Config) error {
+func SendEmail(ctx context.Context, notification models.Notification, cp models.ContactPoint, cfg config.Config, logger *logging.Logger) error {
+	// Initialize rate limiter if not set
+	if emailLimiter == nil {
+		initEmailLimiter(cfg.RateLimit.EmailRateLimiter)
+	}
+
+	// Check rate limit
+	if err := emailLimiter.Wait(ctx); err != nil {
+		return fmt.Errorf("email rate limit exceeded: %w", err)
+	}
+
 	// Parse recipient email from ContactPoint configuration
 	var ec emailConfig
-	configBytes, err := json.Marshal(cp.Configuration) // Convert map to JSON bytes
+	configBytes, err := json.Marshal(cp.Configuration)
 	if err != nil {
 		return fmt.Errorf("failed to marshal configuration for user %d: %w", notification.RecipientID, err)
 	}
@@ -100,9 +108,11 @@ func SendEmail(ctx context.Context, notification models.Notification, cp models.
 	// Setup authentication
 	auth := smtp.PlainAuth("", smtpCfg.Username, smtpCfg.Password, smtpCfg.SMTPServer)
 
-	// Send email
-	if err := smtp.SendMail(addr, auth, smtpCfg.Username, []string{ec.Email}, buf.Bytes()); err != nil {
-		return fmt.Errorf("error sending email to %s: %w", ec.Email, err)
-	}
-	return nil
+	// Retry sending email
+	return utils.Retry(logger, 3, time.Second, func() error {
+		if err := smtp.SendMail(addr, auth, smtpCfg.Username, []string{ec.Email}, buf.Bytes()); err != nil {
+			return fmt.Errorf("error sending email to %s: %w", ec.Email, err)
+		}
+		return nil
+	})
 }
