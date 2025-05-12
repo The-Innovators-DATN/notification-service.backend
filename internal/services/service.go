@@ -18,7 +18,7 @@ import (
 // WebSocketManager manages WebSocket connections for users
 type WebSocketManager struct {
 	connections map[int]map[*websocket.Conn]bool // userID -> set of connections
-	mutex       sync.Mutex
+	mutex       sync.RWMutex
 	logger      *logging.Logger
 }
 

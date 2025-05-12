@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/smtp"
+	"sync"
 	"text/template"
 	"time"
 
@@ -39,22 +40,27 @@ Message:
 {{ .Body }}`
 
 // emailLimiter is the global rate limiter for email sending
-var emailLimiter *rate.Limiter
+var (
+	limiterMu          sync.Mutex
+	emailLimiterByUser = map[int]*rate.Limiter{}
+)
 
-// initEmailLimiter initializes the email rate limiter
-func initEmailLimiter(ratePerSecond int) {
-	emailLimiter = rate.NewLimiter(rate.Limit(float64(ratePerSecond)), ratePerSecond)
+func getLimiter(uid int, rps int) *rate.Limiter {
+	limiterMu.Lock()
+	defer limiterMu.Unlock()
+	l, ok := emailLimiterByUser[uid]
+	if !ok {
+		l = rate.NewLimiter(rate.Limit(rps), rps)
+		emailLimiterByUser[uid] = l
+	}
+	return l
 }
 
 // SendEmail sends an alert email using SMTP, populating recipient from ContactPoint configuration.
 func SendEmail(ctx context.Context, notification models.Notification, cp models.ContactPoint, cfg config.Config, logger *logging.Logger) error {
-	// Initialize rate limiter if not set
-	if emailLimiter == nil {
-		initEmailLimiter(cfg.RateLimit.EmailRateLimiter)
-	}
 
 	// Check rate limit
-	if err := emailLimiter.Wait(ctx); err != nil {
+	if err := getLimiter(notification.RecipientID, cfg.RateLimit.EmailRateLimiter).Wait(ctx); err != nil {
 		return fmt.Errorf("email rate limit exceeded: %w", err)
 	}
 

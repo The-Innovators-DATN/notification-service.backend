@@ -1,9 +1,10 @@
 package api
 
 import (
-	"github.com/gin-gonic/gin"
 	"notification-service/internal/config"
 	"notification-service/internal/logging"
+	
+	"github.com/gin-gonic/gin"
 )
 
 // NewRouter configures routes and middleware for the services service API.
@@ -12,6 +13,7 @@ func NewRouter(logger *logging.Logger, cfg config.Config, handler *Handler) *gin
 	r.Use(gin.Recovery(), RequestLoggingMiddleware(logger))
 	r.Use(injectHandler(handler))
 	rApi := r.Group(cfg.API.BasePath)
+	// rApi.Use(InjectHandlerMiddleware(handler))
 	// Health check
 	rApi.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
@@ -91,7 +93,14 @@ func NewRouter(logger *logging.Logger, cfg config.Config, handler *Handler) *gin
 
 // ctxHandler extracts Handler instance from context
 func ctxHandler(c *gin.Context) *Handler {
-	return c.MustGet("handler").(*Handler)
+	// assume Handler was injected into context earlier if needed
+	// or simply use closure-bound Handler in wrapper
+	h, exists := c.Get("handler")
+	if !exists {
+		c.JSON(500, gin.H{"error": "handler not found"})
+		return nil
+	}
+	return h.(*Handler)
 }
 
 // handlerWrapper wraps a handler function with error handling and logger

@@ -8,10 +8,7 @@ import (
 	"notification-service/internal/kafka"
 	"notification-service/internal/logging"
 	"notification-service/internal/services"
-	"os"
-	"os/signal"
 	"sync"
-	"syscall"
 )
 
 func main() {
@@ -21,7 +18,6 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Initialize logger
 	logger, err := logging.New(cfg.Logging.Dir, cfg.Logging.Level)
 	if err != nil {
 		log.Fatalf("Failed to init logger: %v", err)
@@ -42,24 +38,14 @@ func main() {
 
 	// Initialize Kafka consumer
 	consumer := kafka.NewConsumer([]string{cfg.Kafka.Broker}, cfg.Kafka.Topic, cfg.Kafka.GroupID, svc)
+	log.Printf("Kafka consumer initialized with topic: %s", cfg.Kafka.Topic)
 	go consumer.Start(&wg)
 
 	// Start API server
 	handler := api.NewHandler(dbConn, logger, svc)
 	router := api.NewRouter(logger, cfg, handler)
-	go func() {
-		logger.Infof("Starting API server on :8080")
-		if err := router.Run(":8080"); err != nil {
-			logger.Errorf("API server failed: %v", err)
-		}
-	}()
-
-	// Graceful shutdown
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	<-sigChan
-	logger.Infof("Shutting down service...")
-	consumer.Close()
-	wg.Wait()
-	logger.Infof("Service stopped gracefully")
+	logger.Infof("Starting API server on :9191")
+	if err := router.Run(":9191"); err != nil {
+		logger.Errorf("API server failed: %v", err)
+	}
 }
