@@ -21,17 +21,17 @@ type AlertContext struct {
 // Notification represents a delivered services with context and error details.
 type Notification struct {
 	ID                   [16]byte      `json:"id"`
-	CreatedAt            time.Time     `json:"created_at"`
-	UpdatedAt            time.Time     `json:"updated_at"`
-	Type                 string        `json:"type"`
-	Subject              string        `json:"subject"`
-	Body                 string        `json:"body"`
-	NotificationPolicyID [16]byte      `json:"notification_policy_id"`
-	Silenced             int           `json:"silenced"`
-	Status               string        `json:"status"`
-	DeliveryMethod       string        `json:"delivery_method"`
-	RecipientID          int           `json:"recipient_id"`
-	RequestID            [16]byte      `json:"request_id"`
+	CreatedAt            time.Time     `json:"created_at,omitempty"`
+	UpdatedAt            time.Time     `json:"updated_at,omitempty"`
+	Type                 string        `json:"type,omitempty"`
+	Subject              string        `json:"subject,omitempty"`
+	Body                 string        `json:"body,omitempty"`
+	NotificationPolicyID [16]byte      `json:"notification_policy_id,omitempty"`
+	Silenced             int           `json:"silenced,omitempty"`
+	Status               string        `json:"status,omitempty"`
+	DeliveryMethod       string        `json:"delivery_method,omitempty"`
+	RecipientID          int           `json:"recipient_id,omitempty"`
+	RequestID            [16]byte      `json:"request_id,omitempty"`
 	Error                string        `json:"error,omitempty"`
 	Context              AlertContext  `json:"context,omitempty"`
 	Policy               *Policy       `json:"policy,omitempty"`        // Added for response, not stored in DB

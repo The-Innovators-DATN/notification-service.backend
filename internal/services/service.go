@@ -102,6 +102,11 @@ func (s *Service) worker(id int) {
 // handleTask processes tasks from alert-service and sends notifications
 func (s *Service) handleTask(task models.Task) {
 	// Parse request ID
+	err := s.db.CreateAlert(s.ctx, task)
+	if err != nil {
+		s.logger.Errorf("Failed to save alert: %v", err)
+	}
+
 	reqID, err := uuid.Parse(task.RequestID)
 	if err != nil {
 		s.logger.Errorf("Invalid request ID %s: %v", task.RequestID, err)

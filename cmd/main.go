@@ -17,7 +17,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
-
 	logger, err := logging.New(cfg.Logging.Dir, cfg.Logging.Level)
 	if err != nil {
 		log.Fatalf("Failed to init logger: %v", err)
@@ -37,8 +36,17 @@ func main() {
 	svc.Start(&wg)
 
 	// Initialize Kafka consumer
-	consumer := kafka.NewConsumer([]string{cfg.Kafka.Broker}, cfg.Kafka.Topic, cfg.Kafka.GroupID, svc)
-	log.Printf("Kafka consumer initialized with topic: %s", cfg.Kafka.Topic)
+	consumer, err := kafka.NewConsumer([]string{cfg.Kafka.Broker}, cfg.Kafka.Topic, cfg.Kafka.GroupID, svc)
+	if err != nil {
+		logger.Errorf("Failed to create Kafka consumer: %v", err)
+		log.Fatalf("Kafka consumer creation failed: %v", err)
+	}
+	logger.Infof("Kafka consumer initialized with topic: %s", cfg.Kafka.Topic)
+	defer func() {
+		if err := consumer.Close(); err != nil {
+			logger.Errorf("Failed to close Kafka consumer: %v", err)
+		}
+	}()
 	go consumer.Start(&wg)
 
 	// Start API server
@@ -48,4 +56,7 @@ func main() {
 	if err := router.Run(":9191"); err != nil {
 		logger.Errorf("API server failed: %v", err)
 	}
+
+	// Wait for all goroutines to finish (if needed)
+	wg.Wait()
 }

@@ -460,6 +460,29 @@ func (h *Handler) GetAllNotifications(c *gin.Context) {
 	c.JSON(http.StatusOK, StandardResponse{true, "all notifications list", PaginatedResponse{total, items}})
 }
 
+func (h *Handler) GetAlertByUserID(c *gin.Context) {
+	uid, err := strconv.ParseInt(c.Param("user_id"), 10, 64)
+	if err != nil {
+		h.logger.Errorf("invalid user_id %s: %v", c.Param("user_id"), err)
+		c.JSON(http.StatusBadRequest, StandardResponse{false, "invalid user_id", nil})
+		return
+	}
+
+	status := c.DefaultQuery("status", "all")
+	limit := parseQueryInt(c, "limit", 50)
+	offset := parseQueryInt(c, "offset", 0)
+
+	items, total, err := h.db.GetAlertsByUserID(c.Request.Context(), int(uid), limit, offset, status)
+	if err != nil {
+		h.logger.Errorf("failed to list alerts for user %d: %v", uid, err)
+		c.JSON(http.StatusInternalServerError, StandardResponse{false, "could not fetch alerts", nil})
+		return
+	}
+
+	h.logger.Infof("listed %d alert for user %d (total %d)", len(items), uid, total)
+	c.JSON(http.StatusOK, StandardResponse{true, "alert list", PaginatedResponse{total, items}})
+}
+
 // parseQueryInt is a helper to read integer query params with default
 func parseQueryInt(c *gin.Context, key string, def int) int {
 	if v := c.DefaultQuery(key, ""); v != "" {

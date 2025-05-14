@@ -46,7 +46,7 @@ type Config struct {
 // Load reads environment variables, applies defaults, and returns a Config.
 func Load() (Config, error) {
 	// Load .env if present
-	if err := godotenv.Load(".env"); err != nil && !os.IsNotExist(err) {
+	if err := godotenv.Load("../.env"); err != nil && !os.IsNotExist(err) {
 		return Config{}, fmt.Errorf("failed to load .env file: %w", err)
 	}
 
@@ -75,7 +75,7 @@ func Load() (Config, error) {
 
 	// Logging settings
 	cfg.Logging.Level = os.Getenv("LOG_LEVEL")
-	cfg.Logging.Dir = os.Getenv("LOG_FILE")
+	cfg.Logging.Dir = os.Getenv("LOG_DIR")
 
 	// Notification worker settings
 	if qs, err := strconv.Atoi(os.Getenv("QUEUE_SIZE")); err == nil {

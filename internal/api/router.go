@@ -3,7 +3,7 @@ package api
 import (
 	"notification-service/internal/config"
 	"notification-service/internal/logging"
-	
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -82,6 +82,14 @@ func NewRouter(logger *logging.Logger, cfg config.Config, handler *Handler) *gin
 		}))
 	}
 
+	// Alerts routes
+	alert := rApi.Group("/alerts")
+	{
+		alert.GET("/user/:user_id", handlerWrapper(logger, func(c *gin.Context) {
+			h := ctxHandler(c)
+			h.GetAlertByUserID(c)
+		}))
+	}
 	// WebSocket route for real-time notifications
 	rApi.GET("/ws", handlerWrapper(logger, func(c *gin.Context) {
 		h := ctxHandler(c)
