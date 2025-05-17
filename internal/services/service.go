@@ -188,7 +188,7 @@ func (s *Service) handleTask(task models.Task) {
 				final = "failed"
 				s.logger.Errorf("Dispatch error via %s: %v", pol.ContactPoint.Type, err)
 			}
-			_ = s.db.UpdateNotificationStatus(s.ctx, task.RequestID, final, fmt.Sprintf("%v", err))
+			_ = s.db.UpdateNotificationStatus(s.ctx, task.RequestID, pol.ContactPoint.Type, final, fmt.Sprintf("%v", err))
 			s.logger.Infof("Policy %s dispatched %s via %s", uuid.UUID(pol.ID).String(), final, pol.ContactPoint.Type)
 		} else {
 			_ = s.db.UpdateNotificationStatus(s.ctx, task.RequestID, "silenced", "Notification silenced, no dispatch")

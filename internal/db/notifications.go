@@ -59,7 +59,7 @@ func (d *DB) CreateNotification(ctx context.Context, n models.Notification) erro
 }
 
 // UpdateNotificationStatus updates status and error by request ID.
-func (d *DB) UpdateNotificationStatus(ctx context.Context, requestID string, status, errMsg string) error {
+func (d *DB) UpdateNotificationStatus(ctx context.Context, requestID string, deliviery_method, status, errMsg string) error {
 	reqID, err := uuid.Parse(requestID)
 	if err != nil {
 		return fmt.Errorf("invalid request_id UUID: %w", err)
@@ -68,11 +68,12 @@ func (d *DB) UpdateNotificationStatus(ctx context.Context, requestID string, sta
 	query := `
 	UPDATE notifications
 	SET status = $1,
-		error = $2,
+	    delivery_method = $2,
+		error = $3,
 		updated_at = NOW()
-	WHERE request_id = $3`
+	WHERE request_id = $4`
 
-	res, err := d.Pool.Exec(ctx, query, status, errMsg, reqID)
+	res, err := d.Pool.Exec(ctx, query, status, deliviery_method, errMsg, reqID)
 	if err != nil {
 		return fmt.Errorf("failed to update services status: %w", err)
 	}

@@ -89,7 +89,12 @@ func NewRouter(logger *logging.Logger, cfg config.Config, handler *Handler) *gin
 			h := ctxHandler(c)
 			h.GetAlertByUserID(c)
 		}))
+		alert.GET("/user/:user_id/station/:station_id", handlerWrapper(logger, func(c *gin.Context) {
+			h := ctxHandler(c)
+			h.GetAlertByUserIDAndStationID(c)
+		}))
 	}
+
 	// WebSocket route for real-time notifications
 	rApi.GET("/ws", handlerWrapper(logger, func(c *gin.Context) {
 		h := ctxHandler(c)

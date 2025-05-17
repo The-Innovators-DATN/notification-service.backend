@@ -468,11 +468,37 @@ func (h *Handler) GetAlertByUserID(c *gin.Context) {
 		return
 	}
 
-	status := c.DefaultQuery("status", "all")
 	limit := parseQueryInt(c, "limit", 50)
 	offset := parseQueryInt(c, "offset", 0)
 
-	items, total, err := h.db.GetAlertsByUserID(c.Request.Context(), int(uid), limit, offset, status)
+	items, total, err := h.db.GetAlertsByUserID(c.Request.Context(), int(uid), limit, offset)
+	if err != nil {
+		h.logger.Errorf("failed to list alerts for user %d: %v", uid, err)
+		c.JSON(http.StatusInternalServerError, StandardResponse{false, "could not fetch alerts", nil})
+		return
+	}
+
+	h.logger.Infof("listed %d alert for user %d (total %d)", len(items), uid, total)
+	c.JSON(http.StatusOK, StandardResponse{true, "alert list", PaginatedResponse{total, items}})
+}
+
+func (h *Handler) GetAlertByUserIDAndStationID(c *gin.Context) {
+	uid, err := strconv.ParseInt(c.Param("user_id"), 10, 64)
+	if err != nil {
+		h.logger.Errorf("invalid user_id %s: %v", c.Param("user_id"), err)
+		c.JSON(http.StatusBadRequest, StandardResponse{false, "invalid user_id", nil})
+		return
+	}
+	stationID, err := strconv.ParseInt(c.Param("station_id"), 10, 64)
+	if err != nil {
+		h.logger.Errorf("invalid station_id %s: %v", c.Param("station_id"), err)
+		c.JSON(http.StatusBadRequest, StandardResponse{false, "invalid station_id", nil})
+		return
+	}
+	limit := parseQueryInt(c, "limit", 50)
+	offset := parseQueryInt(c, "offset", 0)
+
+	items, total, err := h.db.GetAlertsByUserIDAndStationID(c.Request.Context(), int(uid), int(stationID), limit, offset)
 	if err != nil {
 		h.logger.Errorf("failed to list alerts for user %d: %v", uid, err)
 		c.JSON(http.StatusInternalServerError, StandardResponse{false, "could not fetch alerts", nil})
