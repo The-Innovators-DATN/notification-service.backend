@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/smtp"
+	"os"
+	"path/filepath"
 	"sync"
 	"text/template"
 	"time"
@@ -21,23 +23,6 @@ import (
 type emailConfig struct {
 	Email string `json:"email"`
 }
-
-// emailTemplate defines the structure of the email body with optional context fields.
-const emailTemplate = `Subject: {{ .Subject }}
-From: {{ .FromName }} <{{ .Username }}>
-To: {{ .To }}
-MIME-Version: 1.0
-Content-Type: text/plain; charset="utf-8"
-
-Alert Details:
-- Station ID: {{ .Context.StationID }}
-- Metric: {{ .Context.MetricName }} (ID {{ .Context.MetricID }})
-- Operator: {{ .Context.Operator }}
-- Threshold: {{ .Context.ThresholdMin }} - {{ .Context.ThresholdMax }} (target {{ .Context.Threshold }})
-- Value: {{ .Context.Value }}
-
-Message:
-{{ .Body }}`
 
 // emailLimiter is the global rate limiter for email sending
 var (
@@ -84,6 +69,17 @@ func SendEmail(ctx context.Context, notification models.Notification, cp models.
 	}
 	addr := fmt.Sprintf("%s:%d", smtpCfg.SMTPServer, smtpCfg.SMTPPort)
 
+	tmplPath := filepath.Join("template", "alert_email.html")
+	tmplBytes, err := os.ReadFile(tmplPath)
+	if err != nil {
+		return fmt.Errorf("failed to read email template file: %w", err)
+	}
+
+	tmpl, err := template.New("email").Parse(string(tmplBytes))
+	if err != nil {
+		return fmt.Errorf("failed to parse email template: %w", err)
+	}
+
 	// Prepare template data
 	tmplData := struct {
 		Subject  string
@@ -92,6 +88,7 @@ func SendEmail(ctx context.Context, notification models.Notification, cp models.
 		To       string
 		Body     string
 		Context  models.AlertContext
+		NowYear  int
 	}{
 		Subject:  notification.Subject,
 		FromName: smtpCfg.FromName,
@@ -99,24 +96,29 @@ func SendEmail(ctx context.Context, notification models.Notification, cp models.
 		To:       ec.Email,
 		Body:     notification.Body,
 		Context:  notification.Context,
+		NowYear:  time.Now().Year(),
 	}
 
-	// Render email
-	tmpl, err := template.New("email").Parse(emailTemplate)
-	if err != nil {
-		return fmt.Errorf("failed to parse email template: %w", err)
-	}
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, tmplData); err != nil {
+	var body bytes.Buffer
+	if err := tmpl.Execute(&body, tmplData); err != nil {
 		return fmt.Errorf("failed to execute email template: %w", err)
 	}
+
+	msg := bytes.Buffer{}
+	msg.WriteString(fmt.Sprintf("Subject: %s\r\n", notification.Subject))
+	msg.WriteString(fmt.Sprintf("From: %s <%s>\r\n", smtpCfg.FromName, smtpCfg.Username))
+	msg.WriteString(fmt.Sprintf("To: %s\r\n", ec.Email))
+	msg.WriteString("MIME-Version: 1.0\r\n")
+	msg.WriteString("Content-Type: text/html; charset=\"UTF-8\"\r\n")
+	msg.WriteString("\r\n")
+	msg.Write(body.Bytes())
 
 	// Setup authentication
 	auth := smtp.PlainAuth("", smtpCfg.Username, smtpCfg.Password, smtpCfg.SMTPServer)
 
 	// Retry sending email
 	return utils.Retry(logger, 3, time.Second, func() error {
-		if err := smtp.SendMail(addr, auth, smtpCfg.Username, []string{ec.Email}, buf.Bytes()); err != nil {
+		if err := smtp.SendMail(addr, auth, smtpCfg.Username, []string{ec.Email}, msg.Bytes()); err != nil {
 			return fmt.Errorf("error sending email to %s: %w", ec.Email, err)
 		}
 		return nil

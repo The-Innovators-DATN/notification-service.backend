@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ .Subject }}</title>
+    <style>
+        body {
+            font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f7f9fc;
+            color: #333;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            max-width: 600px;
+            margin: 30px auto;
+            background-color: #ffffff;
+            border-radius: 6px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            overflow: hidden;
+            border: 1px solid #e1e8ed;
+        }
+        .header {
+            background-color: #0077cc;
+            padding: 20px;
+            color: white;
+            text-align: center;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+            letter-spacing: 1px;
+        }
+        .content {
+            padding: 20px 30px;
+            line-height: 1.5;
+            font-size: 16px;
+        }
+        .content h2 {
+            color: #0077cc;
+            margin-top: 0;
+        }
+        .alert-details {
+            background-color: #f0f7ff;
+            border: 1px solid #b3d1ff;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+        .alert-details ul {
+            list-style: none;
+            padding-left: 0;
+            margin: 0;
+        }
+        .alert-details li {
+            padding: 4px 0;
+        }
+        .footer {
+            background-color: #f0f3f6;
+            color: #666;
+            font-size: 13px;
+            text-align: center;
+            padding: 15px 20px;
+            border-top: 1px solid #d1dbe5;
+        }
+        a {
+            color: #0077cc;
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>AquaTech Notification</h1>
+    </div>
+    <div class="content">
+        <h2>{{ .Subject }}</h2>
+
+        <div class="alert-details">
+            <strong>Alert Details:</strong>
+            <ul>
+                <li><strong>Station ID:</strong> {{ .Context.StationID }}</li>
+                <li><strong>Metric:</strong> {{ .Context.MetricName }} (ID {{ .Context.MetricID }})</li>
+                <li><strong>Operator:</strong> {{ .Context.Operator }}</li>
+                <li><strong>Threshold:</strong> {{ .Context.ThresholdMin }} - {{ .Context.ThresholdMax }} (Target {{ .Context.Threshold }})</li>
+                <li><strong>Value:</strong> {{ .Context.Value }}</li>
+            </ul>
+        </div>
+
+        <p><strong>Message:</strong></p>
+        <p>{{ .Body }}</p>
+
+        <p>Thank you,<br/>The AquaTech Team</p>
+    </div>
+    <div class="footer">
+        &copy; {{ .NowYear }} AquaTech. All rights reserved.<br/>
+        <a href="https://aquatech.example.com">Visit our website</a>
+    </div>
+</div>
+</body>
+</html>
