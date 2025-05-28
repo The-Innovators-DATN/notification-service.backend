@@ -46,7 +46,7 @@ type Config struct {
 // Load reads environment variables, applies defaults, and returns a Config.
 func Load() (Config, error) {
 	// Load .env if present
-	if err := godotenv.Load("../.env"); err != nil && !os.IsNotExist(err) {
+	if err := godotenv.Load(".env"); err != nil && !os.IsNotExist(err) {
 		return Config{}, fmt.Errorf("failed to load .env file: %w", err)
 	}
 

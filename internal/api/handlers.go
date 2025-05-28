@@ -105,7 +105,7 @@ func (h *Handler) CreateContactPoint(c *gin.Context) {
 	created, err := h.db.CreateContactPoint(c.Request.Context(), contactPoint)
 	if err != nil {
 		h.logger.Errorf("failed to create contact point: %v", err)
-		c.JSON(http.StatusInternalServerError, StandardResponse{false, "could not create contact point", nil})
+		c.JSON(http.StatusInternalServerError, StandardResponse{false, "could not create contact point", err})
 		return
 	}
 

@@ -3,8 +3,10 @@ package db
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"github.com/google/uuid"
 	"notification-service/internal/models"
+	"github.com/go-telegram/bot"
 )
 
 // CreateContactPoint inserts a new contact point or updates an existing one.
@@ -14,7 +16,40 @@ func (d *DB) CreateContactPoint(ctx context.Context, cp models.ContactPoint) (mo
 		newID := uuid.New()
 		copy(cp.ID[:], newID[:])
 	}
+	// Contact poimt if is telegram
+	if cp.Type == "telegram" {
+		if cp.Configuration == nil {
+			return models.ContactPoint{}, fmt.Errorf("configuration cannot be nil for telegram contact point")
+		}
+		if _, ok := cp.Configuration["chat_id"]; !ok {
+			return models.ContactPoint{}, fmt.Errorf("chat_id is required in configuration for telegram contact point")
+		}
+		if _, ok := cp.Configuration["bot_token"]; !ok {
+			return models.ContactPoint{}, fmt.Errorf("bot_token is required in configuration for telegram contact point")
+		}
 
+		chatIDStr := cp.Configuration["chat_id"].(string)
+		chatID, err := strconv.ParseInt(chatIDStr, 10, 64)
+				// Connect and send a test message to the Telegram bot, cp.Configuration["bot_token"] must be add "bot" before the token
+		botToken := cp.Configuration["bot_token"].(string)
+		// botToken := cp.Configuration["bot_token"].(string)
+
+		// log.Info("Connecting to Telegram bot with token: %s", botToken)
+		fmt.Println("Connecting to Telegram bot with token: %s", botToken)
+		b, err := bot.New(botToken)
+		if err != nil {
+			return models.ContactPoint{}, fmt.Errorf("failed to create Telegram bot: %w", err)
+		}
+
+		_, err = b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: chatID,
+			Text:   "Test message from Notification Service",
+		})
+		if err != nil {
+			return models.ContactPoint{}, fmt.Errorf("failed to send test message to Telegram bot: %w", err)
+		}
+		fmt.Println("Test message sent to Telegram bot successfully")
+	}
 	query := `
 	INSERT INTO contact_points (
 		id, name, user_id, type, configuration, status, created_at, updated_at

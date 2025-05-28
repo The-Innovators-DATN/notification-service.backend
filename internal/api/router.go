@@ -83,7 +83,7 @@ func NewRouter(logger *logging.Logger, cfg config.Config, handler *Handler) *gin
 	}
 
 	// Alerts routes
-	alert := rApi.Group("/alerts")
+	alert := rApi.Group("/alerts/raw")
 	{
 		alert.GET("/user/:user_id", handlerWrapper(logger, func(c *gin.Context) {
 			h := ctxHandler(c)

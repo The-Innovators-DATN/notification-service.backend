@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
-
 	"github.com/go-telegram/bot"
 	"golang.org/x/time/rate"
 	"notification-service/internal/config"
@@ -17,7 +17,7 @@ import (
 // telegramConfig holds bot token and chat ID for a Telegram contact point.
 type telegramConfig struct {
 	BotToken string `json:"bot_token"`
-	ChatID   int64  `json:"chat_id"`
+	ChatID   string  `json:"chat_id"`
 }
 
 // telegramLimiter is the global rate limiter for Telegram messages
@@ -52,7 +52,7 @@ func SendTelegram(ctx context.Context, notif models.Notification, cp models.Cont
 	if tCfg.BotToken == "" {
 		return fmt.Errorf("missing bot_token in Telegram configuration for contact point %s", cp.ID)
 	}
-	if tCfg.ChatID == 0 {
+	if tCfg.ChatID == "" {
 		return fmt.Errorf("missing chat_id in Telegram configuration for contact point %s", cp.ID)
 	}
 
@@ -75,22 +75,30 @@ func SendTelegram(ctx context.Context, notif models.Notification, cp models.Cont
 		notif.Context.ThresholdMax,
 		notif.Context.Value,
 	)
-
+	// Log message
+	logger.Infof("Sending Telegram message to chat_id %s: %s", tCfg.ChatID, text)
 	// Retry sending message
 	return utils.Retry(logger, 3, time.Second, func() error {
+
 		b, err := bot.New(tCfg.BotToken)
 		if err != nil {
 			return fmt.Errorf("failed to initialize Telegram bot for contact point %s: %w", cp.ID, err)
 		}
+		// chatID, err := strconv.ParseInt(tCfg.ChatID, 10, 64)
+		chatIDInt64, err := strconv.ParseInt(tCfg.ChatID, 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid chat_id: %w", err)
+		}
 
 		params := &bot.SendMessageParams{
-			ChatID:    tCfg.ChatID,
+			ChatID:    chatIDInt64,
 			Text:      text,
 			ParseMode: "Markdown",
 		}
 		if _, err := b.SendMessage(ctx, params); err != nil {
 			return fmt.Errorf("failed to send Telegram message to chat_id %d: %w", tCfg.ChatID, err)
 		}
+		logger.Infof("Telegram message sent to chat_id %s: %s", tCfg.ChatID, text)
 		return nil
 	})
 }

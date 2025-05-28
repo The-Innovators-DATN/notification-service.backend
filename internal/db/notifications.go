@@ -10,11 +10,11 @@ import (
 
 // CreateNotification inserts a new services record with nested AlertContext fields.
 func (d *DB) CreateNotification(ctx context.Context, n models.Notification) error {
-	if n.ID == [16]byte{} {
-		newID := uuid.New()
-		copy(n.ID[:], newID[:])
-	}
-	notifID := uuid.UUID(n.ID)
+	// if n.ID == [16]byte{} {
+	// 	newID := uuid.New()
+	// 	copy(n.ID[:], newID[:])
+	// }
+	notifID := uuid.New()
 	policyFK := uuid.UUID(n.NotificationPolicyID)
 	reqID := uuid.UUID(n.RequestID)
 
